@@ -160,7 +160,6 @@
         <div style="padding-top: 20px; border-top: 1px solid var(--border);">
             <div class="section-title">Properties</div>
             <div id="props-panel" style="display:none;">
-                <!-- Media Props (Video/Image) -->
                 <div id="media-props">
                     <div class="prop-group">
                         <label>File Path</label>
@@ -182,14 +181,13 @@
                     </div>
                 </div>
 
-                <!-- Text Props -->
                 <div id="text-props" style="display:none;">
                     <div class="prop-group">
                         <label>Text Content</label>
                         <input type="text" id="p-text-content" oninput="updateClip()">
                     </div>
                     <div class="prop-group">
-                        <label>Font File Path (Windows: C\:/Windows/Fonts/arial.ttf)</label>
+                        <label>Font File Path</label>
                         <input type="text" id="p-text-font" oninput="updateClip()">
                     </div>
                     <div class="prop-row">
@@ -204,7 +202,6 @@
                     </div>
                 </div>
 
-                <!-- Common Props -->
                 <div class="prop-group">
                     <label>Duration (s)</label>
                     <input type="number" id="p-duration" step="0.1" oninput="updateClip()">
@@ -246,7 +243,7 @@
             <button class="btn copy-btn" onclick="copyPrompt()">Copy Command</button>
         </div>
         <div id="timeline">
-            <div class="section-title">Timeline (20px = 1s) | Click to Seek</div>
+            <div class="section-title">Timeline (20px = 1s) | Click to Seek</div_
             <div id="timeline-scroll-container">
                 <div id="timeline-ruler"></div>
                 <div id="tracks-area">
@@ -514,10 +511,44 @@
             }
             if (!activeClip) return;
             const rect = trackArea.getBoundingClientRect();
+            const tolerance = 0.2; 
+
             if (isDragging) {
-                activeClip.timelineStart = Math.max(0, (e.clientX - rect.left - dragOffset) / PROJECT.pxPerSec);
+                let rawStart = (e.clientX - rect.left - dragOffset) / PROJECT.pxPerSec;
+                let snapTarget = null;
+
+                state.clips.forEach(c => {
+                    if (c === activeClip) return;
+                    const start = c.timelineStart;
+                    const end = c.timelineStart + c.duration;
+                    if (Math.abs(rawStart - end) < tolerance) snapTarget = end;
+                    else if (Math.abs(rawStart - start) < tolerance) snapTarget = start;
+                });
+
+                if (snapTarget === null && Math.abs(rawStart - state.time) < tolerance) {
+                    snapTarget = state.time;
+                }
+
+                activeClip.timelineStart = snapTarget !== null ? snapTarget : Math.max(0, rawStart);
             } else if (isResizing) {
-                activeClip.duration = Math.max(0.1, (e.clientX - rect.left - (activeClip.timelineStart * PROJECT.pxPerSec)) / PROJECT.pxPerSec);
+                // --- NOVA LÓGICA DE SNAP PARA REDIMENSIONAMENTO ---
+                let rawEnd = (e.clientX - rect.left) / PROJECT.pxPerSec;
+                let snapEnd = null;
+
+                state.clips.forEach(c => {
+                    if (c === activeClip) return;
+                    const start = c.timelineStart;
+                    const end = c.timelineStart + c.duration;
+                    if (Math.abs(rawEnd - end) < tolerance) snapEnd = end;
+                    else if (Math.abs(rawEnd - start) < tolerance) snapEnd = start;
+                });
+
+                if (snapEnd === null && Math.abs(rawEnd - state.time) < tolerance) {
+                    snapEnd = state.time;
+                }
+
+                const finalEnd = snapEnd !== null ? snapEnd : rawEnd;
+                activeClip.duration = Math.max(0.1, finalEnd - activeClip.timelineStart);
             }
             if (isDragging || isResizing) { syncUI(); generateFFmpeg(); }
         });
@@ -542,7 +573,6 @@
                 document.getElementById('p-path').value = clip.path;
                 document.getElementById('p-scale').value = clip.scale;
                 
-                // Somente vídeos têm sourceStart e volume
                 const isVideo = clip.type === 'video';
                 document.getElementById('srcstart-group').style.display = isVideo ? 'block' : 'none';
                 document.getElementById('vol-group').style.display = isVideo ? 'block' : 'none';
@@ -580,6 +610,7 @@
                 if(clip.type === 'video') {
                     clip.sourceStart = parseFloat(document.getElementById('p-srcstart').value) || 0;
                     clip.volume = parseFloat(document.getElementById('p-volume').value) || 1;
+                    clip.video.volume = Math.min(1, clip.volume);
                 }
             } else {
                 clip.text = document.getElementById('p-text-content').value;
@@ -647,7 +678,7 @@
                         fadeIn: 0, fadeOut: clip.fadeOut, mesh: newMesh, video, texture: tex
                     });
                 } else if (clip.type === 'image') {
-                    const tex = new THREE.TextureLoader().load(URL.createObjectURL(new Blob([clip.texture.image], {type: 'image/jpeg'}))); // Simplified for split
+                    const tex = clip.texture; 
                     newMesh = new THREE.Mesh(new THREE.PlaneGeometry(PROJECT.w, PROJECT.h), new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, transparent: true }));
                     newMesh.visible = false;
                     scene.add(newMesh);
@@ -726,6 +757,7 @@
                 if (active) {
                     if(clip.type === 'video') {
                         clip.video.currentTime = (state.time - clip.timelineStart) + clip.sourceStart;
+                        clip.video.volume = Math.min(1, clip.volume);
                         if (!state.isPlaying) clip.video.pause();
                     }
                     clip.mesh.material.opacity = calculateOpacity(clip); 
@@ -755,7 +787,6 @@
                 return;
             }
 
-            // 1. Mapeamento de Inputs
             let inputCounter = 0;
             let inputs = "";
             let totalT = 0;
@@ -770,10 +801,11 @@
                 totalT = Math.max(totalT, clip.timelineStart + clip.duration);
             });
 
-            const sortedClips = [...state.clips].sort((a, b) => a.timelineStart - b.timelineStart);
+            const layerClipped = state.clips; 
+            
             let vChains = [], aChains = [], ovlChain = "";
 
-            sortedClips.forEach((clip, i) => {
+            layerClipped.forEach((clip, i) => {
                 const globalStart = clip.timelineStart;
                 const globalEnd = clip.timelineStart + clip.duration;
                 
@@ -835,9 +867,13 @@
                 } else {
                     const prev = i === 0 ? `[bg]` : `[ovl${i-1}]`;
                     const next = `[ovl${i}]`;
+                    const texW = clip.texture.image.width;
                     const isCenterX = clip.mesh.position.x === 0;
-                    const posX = isCenterX ? '(w-tw)/2' : Math.round(960 + clip.mesh.position.x);
-                    const posY = Math.round(540 - clip.mesh.position.y);
+                    const posX = isCenterX ? '(w-tw)/2' : Math.round(960 + clip.mesh.position.x - (texW / 2));
+                    
+                    const verticalOffset = clip.fontSize * 0.1; 
+                    const posY = Math.round(540 - clip.mesh.position.y - (clip.fontSize / 2) + verticalOffset);
+                    
                     let finalColor = clip.textColor;
                     if (clip.fadeIn > 0 || clip.fadeOut > 0) {
                         const alphaExpr = `if(lt(t,${globalStart}+${clip.fadeIn}),(t-${globalStart})/${clip.fadeIn},if(lt(t,${globalEnd}-${clip.fadeOut}),1,(${globalEnd}-t)/${clip.fadeOut}))`;
@@ -850,7 +886,7 @@
             if (ovlChain.endsWith(',')) ovlChain = ovlChain.slice(0, -1);
             const bg = `color=c=black:s=1920x1080:d=${totalT}[bg]`;
             const finalVString = `${bg};${vChains.join(',')};${ovlChain}`;
-            const vOut = `[ovl${sortedClips.length - 1}]`;
+            const vOut = `[ovl${layerClipped.length - 1}]`;
             
             let finalA = "", aOut = "";
             if (aChains.length > 0) {
@@ -862,10 +898,8 @@
                 finalA = `anullsrc=channel_layout=stereo:sample_rate=44100[silent]`;
             }
             
-            // ADICIONADO: -t ${totalT} para forçar o fim do vídeo no tempo correto
             document.getElementById('prompt-text').innerText = `ffmpeg ${inputs} -filter_complex "${finalVString};${finalA}" -map "${vOut}" -map "${aOut}" -t ${totalT} -c:v libx264 -c:a aac -movflags +faststart output.mp4`;
         }
-
 
         window.copyPrompt = function() {
             navigator.clipboard.writeText(document.getElementById('prompt-text').innerText);
@@ -922,5 +956,5 @@
         }
         animate();
     </script>
-</body>
+</body
 </html>
