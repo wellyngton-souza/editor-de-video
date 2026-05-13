@@ -60,6 +60,11 @@
             border: 1px solid var(--border);
             position: relative;
         }
+        #timeline-scroll-container::-webkit-scrollbar { height: 8px; }
+        #timeline-scroll-container::-webkit-scrollbar-track { background: #111; }
+        #timeline-scroll-container::-webkit-scrollbar-thumb { background: #333; border-radius: 4px; }
+        #timeline-scroll-container::-webkit-scrollbar-thumb:hover { background: #444; }
+
         #timeline-ruler {
             position: relative; height: 25px; background: #1a1a1a;
             border-bottom: 1px solid var(--border);
@@ -243,7 +248,7 @@
             <button class="btn copy-btn" onclick="copyPrompt()">Copy Command</button>
         </div>
         <div id="timeline">
-            <div class="section-title">Timeline (20px = 1s) | Click to Seek</div_
+            <div class="section-title">Timeline (20px = 1s) | Click to Seek</div>
             <div id="timeline-scroll-container">
                 <div id="timeline-ruler"></div>
                 <div id="tracks-area">
@@ -263,9 +268,20 @@
 
         window.addEventListener('keydown', (e) => {
             if (document.activeElement.tagName === 'INPUT') return;
+
             if (e.key.toLowerCase() === 'm') {
                 const box = document.getElementById('prompt-box');
                 box.style.display = (box.style.display === 'none') ? 'block' : 'none';
+            }
+
+            if (e.code === 'Space' || e.key === ' ') {
+                e.preventDefault();
+                window.togglePlayback();
+            }
+
+            // ATUALIZADO: Atalho 'S' para Split
+            if (e.key.toLowerCase() === 's') {
+                window.splitClip();
             }
         });
 
@@ -531,7 +547,6 @@
 
                 activeClip.timelineStart = snapTarget !== null ? snapTarget : Math.max(0, rawStart);
             } else if (isResizing) {
-                // --- NOVA LÓGICA DE SNAP PARA REDIMENSIONAMENTO ---
                 let rawEnd = (e.clientX - rect.left) / PROJECT.pxPerSec;
                 let snapEnd = null;
 
@@ -698,6 +713,11 @@
                         timelineStart: splitTime, duration: newClipDuration, fadeIn: 0, fadeOut: clip.fadeOut, mesh: newMesh, texture: tex
                     });
                 }
+
+                // ATUALIZADO: Seleciona o lado direito (novo clipe) após o split
+                const newIndex = state.clips.length - 1;
+                selectClip(newIndex);
+
                 updateLayering();
                 syncUI();
                 generateFFmpeg();
@@ -956,5 +976,5 @@
         }
         animate();
     </script>
-</body
+</body>
 </html>
