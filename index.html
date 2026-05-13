@@ -1,0 +1,687 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <title>FFmpeg Studio Pro - Advanced Edition</title>
+    <style>
+        :root { 
+            --bg: #0a0a0a; --panel: #141414; --accent: #00ff88; --text: #efefef; 
+            --border: #2a2a2a; --sidebar-w: 340px; --timeline-h: 320px;
+            --danger: #ff4444;
+        }
+        body { 
+            margin: 0; font-family: 'Segoe UI', system-ui, sans-serif; 
+            background: var(--bg); color: var(--text); 
+            display: flex; height: 100vh; overflow: hidden; user-select: none;
+        }
+        #sidebar { 
+            width: var(--sidebar-w); 
+            flex-shrink: 0; 
+            background: var(--panel); 
+            border-right: 1px solid var(--border); 
+            display: flex; 
+            flex-direction: column; 
+            padding: 20px; 
+            box-sizing: border-box; 
+            z-index: 100;
+            height: 100vh;
+            overflow-y: auto;
+        }
+        .section-title { font-size: 12px; text-transform: uppercase; color: #666; letter-spacing: 1px; margin-bottom: 15px; margin-top: 10px;}
+        
+        #assets-list { 
+            flex: 1; 
+            overflow-y: auto; 
+            margin-bottom: 20px;
+            padding-right: 5px;
+        }
+        #assets-list::-webkit-scrollbar { width: 6px; }
+        #assets-list::-webkit-scrollbar-thumb { background: #333; border-radius: 10px; }
+
+        #main { 
+            flex: 1; 
+            min-width: 0; 
+            display: flex; flex-direction: column; position: relative; background: #000; 
+        }
+        #viewport-container { 
+            flex: 1; position: relative; display: flex; align-items: center; justify-content: center; 
+            background: #050505; overflow: hidden; 
+        }
+        canvas { background: #000; display: block; cursor: default; }
+        #timeline { 
+            height: var(--timeline-h); background: var(--panel); 
+            border-top: 1px solid var(--border); padding: 20px; box-sizing: border-box;
+            display: flex; flex-direction: column;
+        }
+        #timeline-scroll-container { 
+            overflow-x: auto; 
+            overflow-y: hidden;
+            display: block; 
+            border: 1px solid var(--border);
+            position: relative;
+        }
+        #timeline-ruler {
+            position: relative; height: 25px; background: #1a1a1a;
+            border-bottom: 1px solid var(--border);
+            font-family: monospace; font-size: 10px; color: #888;
+            width: 100%; 
+        }
+        .ruler-tick {
+            position: absolute; top: 0; height: 100%;
+            border-left: 1px solid #333; padding-left: 4px;
+            display: flex; align-items: center;
+        }
+        .ruler-tick.major { border-left: 1px solid #555; color: #bbb; }
+        #tracks-area { 
+            position: relative; height: 180px; background: #0d0d0d; 
+            overflow-y: auto; 
+            overflow-x: visible; 
+            cursor: crosshair;
+        }
+        .grid-line {
+            position: absolute; top: 0; left: 0; 
+            width: 100%; 
+            height: 100%;
+            background-image: linear-gradient(90deg, #1a1a1a 1px, transparent 1px);
+            background-size: 20px 100%; pointer-events: none;
+        }
+        #playhead {
+            position: absolute; top: 0; left: 0; width: 2px; 
+            background: #ff3333; z-index: 50; pointer-events: none;
+        }
+        .btn { 
+            background: var(--accent); color: #000; border: none; padding: 12px; 
+            cursor: pointer; font-weight: 600; border-radius: 6px; width: 100%; 
+            margin-bottom: 10px; transition: all 0.2s;
+        }
+        .btn:hover { filter: brightness(1.1); transform: translateY(-1px); }
+        .btn-dark { background: #333; color: #fff; }
+        .btn-danger { background: var(--danger); color: #fff; }
+        .btn-small { padding: 4px 8px; font-size: 10px; width: auto; margin: 0; }
+        
+        .asset-item { 
+            background: #1f1f1f; padding: 12px; margin-bottom: 8px; 
+            border-radius: 6px; cursor: pointer; border-left: 3px solid transparent; 
+            font-size: 13px; transition: 0.2s; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .asset-item.active { border-left-color: var(--accent); background: #2a2a2a; }
+        
+        .prop-group { margin-bottom: 12px; }
+        label { display: block; font-size: 11px; color: #888; margin-bottom: 4px; }
+        input { 
+            width: 100%; background: #000; border: 1px solid var(--border); 
+            color: #fff; padding: 6px; box-sizing: border-box; border-radius: 4px; 
+            font-size: 12px;
+        }
+        .prop-row { display: flex; gap: 10px; }
+        
+        #prompt-box {
+            position: absolute; bottom: 320px; left: 20px; right: 20px;
+            background: rgba(0,0,0,0.9); border: 1px solid var(--accent);
+            border-radius: 8px; z-index: 1000; padding: 15px;
+        }
+        #prompt-text { 
+            font-family: 'Consolas', monospace; font-size: 12px; color: var(--accent); 
+            white-space: pre-wrap; word-break: break-all; max-height: 100px; 
+            overflow-y: auto; margin-bottom: 10px;
+        }
+        .copy-btn { width: auto; padding: 5px 15px; font-size: 11px; margin: 0; }
+        .clip-block {
+            position: absolute; height: 34px; background: var(--accent);
+            color: #000; font-size: 11px; font-weight: bold; border-radius: 4px;
+            cursor: grab; display: flex; align-items: center; padding: 0 10px;
+            box-sizing: border-box; overflow: hidden; z-index: 10;
+        }
+        .resizer {
+            position: absolute; right: 0; top: 0; width: 12px; height: 100%;
+            cursor: col-resize; background: rgba(0,0,0,0.2);
+        }
+    </style>
+</head>
+<body>
+
+    <div id="sidebar">
+        <div class="section-title">Media Assets</div>
+        <input type="file" id="file-input" multiple accept="video/*" style="display:none" onchange="handleFiles(this.files)">
+        <button class="btn" onclick="document.getElementById('file-input').click()">+ Import Video</button>
+        
+        <div style="display: flex; gap: 8px; margin-bottom: 20px;">
+            <button class="btn btn-dark" style="flex:1" onclick="togglePlayback()">▶ Play/Pause</button>
+        </div>
+
+        <div id="assets-list"></div>
+        
+        <div style="padding-top: 20px; border-top: 1px solid var(--border);">
+            <div class="section-title">Properties</div>
+            <div id="props-panel" style="display:none;">
+                <div class="prop-group">
+                    <label>File Path</label>
+                    <input type="text" id="p-path" oninput="updateClip()">
+                </div>
+                <div class="prop-row">
+                    <div class="prop-group">
+                        <label>Start in Source (s)</label>
+                        <input type="number" id="p-srcstart" step="0.1" oninput="updateClip()">
+                    </div>
+                    <div class="prop-group">
+                        <label>Duration (s)</label>
+                        <input type="number" id="p-duration" step="0.1" oninput="updateClip()">
+                    </div>
+                </div>
+                <div class="prop-row">
+                    <div class="prop-group">
+                        <label>Scale (%)</label>
+                        <input type="number" id="p-scale" step="0.01" oninput="updateClip()">
+                    </div>
+                    <div class="prop-group">
+                        <label>Volume (0-2)</label>
+                        <input type="number" id="p-volume" step="0.1" oninput="updateClip()">
+                    </div>
+                </div>
+                <div class="prop-row">
+                    <div class="prop-group">
+                        <label>Pos X (px)</label>
+                        <input type="number" id="p-x" step="1" oninput="updateClip()">
+                    </div>
+                    <div class="prop-group">
+                        <label>Pos Y (px)</label>
+                        <input type="number" id="p-y" step="1" oninput="updateClip()">
+                    </div>
+                </div>
+                <div class="prop-row">
+                    <div class="prop-group">
+                        <label>Fade In (s)</label>
+                        <input type="number" id="p-fadein" step="0.1" oninput="updateClip()">
+                    </div>
+                    <div class="prop-group">
+                        <label>Fade Out (s)</label>
+                        <input type="number" id="p-fadeout" step="0.1" oninput="updateClip()">
+                    </div>
+                </div>
+                <div style="display: flex; gap: 8px; margin-top: 20px;">
+                    <button class="btn btn-dark btn-small" onclick="moveLayer(-1)">⬇ Lower</button>
+                    <button class="btn btn-dark btn-small" onclick="moveLayer(1)">⬆ Raise</button>
+                    <button class="btn btn-dark btn-small" onclick="splitClip()">Split</button>
+                </div>
+                <button class="btn btn-danger" style="margin-top:10px" onclick="deleteClip()">Delete Clip</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="main">
+        <div id="viewport-container"></div>
+        <div id="prompt-box">
+            <div id="prompt-text">Import videos to generate FFmpeg command...</div>
+            <button class="btn copy-btn" onclick="copyPrompt()">Copy Command</button>
+        </div>
+        <div id="timeline">
+            <div class="section-title">Timeline (20px = 1s) | Click to Seek</div>
+            <div id="timeline-scroll-container">
+                <div id="timeline-ruler"></div>
+                <div id="tracks-area">
+                    <div class="grid-line"></div>
+                    <div id="playhead"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
+
+        const PROJECT = { w: 1920, h: 1080, aspect: 16/9, pxPerSec: 20 };
+        let state = { clips: [], selectedIdx: null, isPlaying: false, time: 0 };
+
+        const scene = new THREE.Scene();
+        const camera = new THREE.OrthographicCamera(-PROJECT.w/2, PROJECT.w/2, PROJECT.h/2, -PROJECT.h/2, 0.1, 1000);
+        camera.position.z = 10;
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        const viewport = document.getElementById('viewport-container');
+        viewport.appendChild(renderer.domElement);
+
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+
+        function fitCanvas() {
+            const cw = viewport.clientWidth, ch = viewport.clientHeight;
+            let w = cw, h = cw / PROJECT.aspect;
+            if (h > ch) { h = ch; w = ch * PROJECT.aspect; }
+            renderer.setSize(w, h);
+        }
+        window.addEventListener('resize', fitCanvas);
+        fitCanvas();
+
+        scene.add(new THREE.Mesh(new THREE.PlaneGeometry(PROJECT.w, PROJECT.h), new THREE.MeshBasicMaterial({ color: 0x000000 })));
+
+        function updateLayering() {
+            state.clips.forEach((clip, i) => {
+                clip.mesh.position.z = i * 0.1 + 1;
+            });
+        }
+
+        function calculateOpacity(clip) {
+            const relativeTime = state.time - clip.timelineStart;
+            if (relativeTime < 0 || relativeTime > clip.duration) return 0;
+
+            let opacity = 1.0;
+            if (clip.fadeIn > 0 && relativeTime < clip.fadeIn) {
+                opacity = relativeTime / clip.fadeIn;
+            } else if (clip.fadeOut > 0 && relativeTime > (clip.duration - clip.fadeOut)) {
+                const timeIntoFadeOut = relativeTime - (clip.duration - clip.fadeOut);
+                opacity = 1.0 - (timeIntoFadeOut / clip.fadeOut);
+            }
+            return Math.max(0, Math.min(1, opacity));
+        }
+
+        window.handleFiles = function(files) {
+            Array.from(files).forEach(file => {
+                const video = document.createElement('video');
+                video.src = URL.createObjectURL(file);
+                video.muted = false; 
+                video.loop = true;
+                video.crossOrigin = "anonymous";
+
+                const tex = new THREE.VideoTexture(video);
+                const mesh = new THREE.Mesh(
+                    new THREE.PlaneGeometry(PROJECT.w, PROJECT.h), 
+                    new THREE.MeshBasicMaterial({ 
+                        map: tex, 
+                        side: THREE.DoubleSide, 
+                        transparent: true 
+                    })
+                );
+                mesh.visible = false; 
+                scene.add(mesh);
+
+                state.clips.push({
+                    id: Date.now() + Math.random(), 
+                    path: file.name, 
+                    timelineStart: 0, 
+                    sourceStart: 0,   
+                    duration: 5, 
+                    scale: 1.0, 
+                    volume: 1.0,
+                    fadeIn: 0,
+                    fadeOut: 0,
+                    mesh, video, texture: tex
+                });
+            });
+            updateLayering();
+            syncUI();
+            generateFFmpeg();
+        };
+
+        let activeClip = null; 
+        let isDragging = false; 
+        let isResizing = false; 
+        let isViewportDragging = false; 
+        let viewportActiveClip = null; 
+        let dragOffset = 0;
+
+        const trackArea = document.getElementById('tracks-area');
+
+        renderer.domElement.addEventListener('mousedown', e => {
+            const rect = renderer.domElement.getBoundingClientRect();
+            mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+            mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+            raycaster.setFromCamera(mouse, camera);
+            
+            const intersects = raycaster.intersectObjects(state.clips.map(c => c.mesh));
+            if (intersects.length > 0) {
+                let hitMesh = (state.selectedIdx !== null && intersects.find(item => item.object === state.clips[state.selectedIdx].mesh)) 
+                    ? state.clips[state.selectedIdx].mesh : intersects[0].object;
+
+                viewportActiveClip = state.clips.find(c => c.mesh === hitMesh);
+                isViewportDragging = true;
+                selectClip(state.clips.indexOf(viewportActiveClip));
+                renderer.domElement.style.cursor = 'grabbing';
+                e.preventDefault();
+            }
+        });
+
+        trackArea.addEventListener('mousedown', e => {
+            const rect = trackArea.getBoundingClientRect();
+            if (e.target.classList.contains('resizer')) {
+                isResizing = true;
+                activeClip = state.clips.find(c => c.id == e.target.dataset.id);
+                e.stopPropagation(); return;
+            }
+            if (e.target.classList.contains('clip-block')) {
+                isDragging = true;
+                const id = e.target.dataset.id;
+                activeClip = state.clips.find(c => c.id == id);
+                dragOffset = e.clientX - (rect.left + activeClip.timelineStart * PROJECT.pxPerSec);
+                selectClip(state.clips.indexOf(activeClip)); return;
+            }
+            state.time = (e.clientX - rect.left) / PROJECT.pxPerSec;
+            updatePlayhead();
+            syncVideos();
+        });
+
+        window.addEventListener('mousemove', e => {
+            if (isViewportDragging && viewportActiveClip) {
+                const rect = renderer.domElement.getBoundingClientRect();
+                const deltaX = e.movementX * (PROJECT.w / rect.width);
+                const deltaY = e.movementY * (PROJECT.h / rect.height);
+                viewportActiveClip.mesh.position.x -= deltaX;
+                viewportActiveClip.mesh.position.y += deltaY;
+                document.getElementById('p-x').value = Math.round(viewportActiveClip.mesh.position.x);
+                document.getElementById('p-y').value = Math.round(viewportActiveClip.mesh.position.y);
+                generateFFmpeg();
+                return;
+            }
+
+            if (!activeClip) return;
+            const rect = trackArea.getBoundingClientRect();
+            if (isDragging) {
+                activeClip.timelineStart = Math.max(0, (e.clientX - rect.left - dragOffset) / PROJECT.pxPerSec);
+            } else if (isResizing) {
+                activeClip.duration = Math.max(0.1, (e.clientX - rect.left - (activeClip.timelineStart * PROJECT.pxPerSec)) / PROJECT.pxPerSec);
+            }
+            if (isDragging || isResizing) { syncUI(); generateFFmpeg(); }
+        });
+
+        window.addEventListener('mouseup', () => { 
+            isDragging = false; isResizing = false; activeClip = null; 
+            isViewportDragging = false; viewportActiveClip = null;
+            renderer.domElement.style.cursor = 'default';
+        });
+
+        function selectClip(idx) {
+            state.selectedIdx = idx;
+            const clip = state.clips[idx];
+            document.getElementById('props-panel').style.display = 'block';
+            document.getElementById('p-path').value = clip.path;
+            document.getElementById('p-srcstart').value = clip.sourceStart;
+            document.getElementById('p-duration').value = clip.duration; 
+            document.getElementById('p-scale').value = clip.scale;
+            document.getElementById('p-volume').value = clip.volume;
+            document.getElementById('p-x').value = Math.round(clip.mesh.position.x);
+            document.getElementById('p-y').value = Math.round(clip.mesh.position.y);
+            document.getElementById('p-fadein').value = clip.fadeIn;
+            document.getElementById('p-fadeout').value = clip.fadeOut;
+            syncUI();
+        }
+
+        window.updateClip = function() {
+            if (state.selectedIdx === null) return;
+            const clip = state.clips[state.selectedIdx];
+            clip.path = document.getElementById('p-path').value;
+            clip.sourceStart = parseFloat(document.getElementById('p-srcstart').value) || 0;
+            clip.duration = parseFloat(document.getElementById('p-duration').value) || 0.1; 
+            clip.scale = parseFloat(document.getElementById('p-scale').value) || 1;
+            clip.volume = parseFloat(document.getElementById('p-volume').value) || 1;
+            clip.fadeIn = parseFloat(document.getElementById('p-fadein').value) || 0;
+            clip.fadeOut = parseFloat(document.getElementById('p-fadeout').value) || 0;
+            clip.mesh.position.x = parseFloat(document.getElementById('p-x').value) || 0;
+            clip.mesh.position.y = parseFloat(document.getElementById('p-y').value) || 0;
+            clip.mesh.scale.set(clip.scale, clip.scale, 1);
+            syncUI(); 
+            generateFFmpeg();
+        };
+
+        window.moveLayer = function(dir) {
+            if (state.selectedIdx === null) return;
+            const newIdx = state.selectedIdx + dir;
+            if (newIdx >= 0 && newIdx < state.clips.length) {
+                const temp = state.clips[state.selectedIdx];
+                state.clips[state.selectedIdx] = state.clips[newIdx];
+                state.clips[newIdx] = temp;
+                state.selectedIdx = newIdx;
+                updateLayering();
+                syncUI();
+                generateFFmpeg();
+            }
+        };
+
+        window.deleteClip = function() {
+            if (state.selectedIdx === null) return;
+            const clip = state.clips[state.selectedIdx];
+            scene.remove(clip.mesh);
+            state.clips.splice(state.selectedIdx, 1);
+            state.selectedIdx = null;
+            document.getElementById('props-panel').style.display = 'none';
+            updateLayering();
+            syncUI();
+            generateFFmpeg();
+        };
+
+        window.splitClip = function() {
+            if (state.selectedIdx === null) return;
+            const clip = state.clips[state.selectedIdx];
+            if (state.time > clip.timelineStart && state.time < (clip.timelineStart + clip.duration)) {
+                const splitTime = state.time;
+                const offsetFromStart = splitTime - clip.timelineStart;
+                const originalDuration = clip.duration;
+                clip.duration = offsetFromStart;
+                const newClipDuration = originalDuration - clip.duration;
+                
+                const video = document.createElement('video');
+                video.src = clip.video.src;
+                video.muted = false; video.loop = true;
+                const tex = new THREE.VideoTexture(video);
+                const mesh = new THREE.Mesh(
+                    new THREE.PlaneGeometry(PROJECT.w, PROJECT.h), 
+                    new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, transparent: true })
+                );
+                mesh.position.copy(clip.mesh.position);
+                mesh.scale.copy(clip.mesh.scale);
+                mesh.visible = false;
+                scene.add(mesh);
+                state.clips.push({
+                    id: Date.now() + Math.random(),
+                    path: clip.path, 
+                    timelineStart: splitTime, 
+                    sourceStart: clip.sourceStart + offsetFromStart, 
+                    duration: newClipDuration, 
+                    scale: clip.scale, 
+                    volume: clip.volume,
+                    fadeIn: 0, fadeOut: clip.fadeOut,
+                    mesh, video, texture: tex
+                });
+                updateLayering();
+                syncUI();
+                generateFFmpeg();
+            }
+        };
+
+        function renderRuler() {
+            const ruler = document.getElementById('timeline-ruler');
+            ruler.innerHTML = '';
+            let maxTime = 30; 
+            if (state.clips.length > 0) {
+                maxTime = Math.max(30, Math.max(...state.clips.map(c => c.timelineStart + c.duration)) + 10);
+            }
+            const totalWidth = maxTime * PROJECT.pxPerSec;
+            ruler.style.width = `${totalWidth}px`;
+            trackArea.style.width = `${totalWidth}px`;
+            for (let i = 0; i <= maxTime; i++) {
+                const tick = document.createElement('div');
+                tick.className = `ruler-tick ${i % 5 === 0 ? 'major' : ''}`;
+                tick.style.left = `${i * PROJECT.pxPerSec}px`;
+                tick.innerText = i % 5 === 0 ? `${i}s` : '';
+                ruler.appendChild(tick);
+            }
+        }
+
+        function syncUI() {
+            const list = document.getElementById('assets-list');
+            list.innerHTML = '';
+            trackArea.querySelectorAll('.clip-block').forEach(c => c.remove());
+            state.clips.forEach((clip, i) => {
+                const item = document.createElement('div');
+                item.className = `asset-item ${state.selectedIdx === i ? 'active' : ''}`;
+                item.innerText = clip.path;
+                item.onclick = () => selectClip(i);
+                list.appendChild(item);
+                const block = document.createElement('div');
+                block.className = 'clip-block';
+                block.dataset.id = clip.id;
+                block.style.top = `${i * 45 + 10}px`;
+                block.style.left = `${clip.timelineStart * PROJECT.pxPerSec}px`;
+                block.style.width = `${clip.duration * PROJECT.pxPerSec}px`;
+                block.innerText = clip.path;
+                const res = document.createElement('div');
+                res.className = 'resizer';
+                res.dataset.id = clip.id;
+                block.appendChild(res);
+                trackArea.appendChild(block);
+            });
+            renderRuler();
+            document.getElementById('playhead').style.height = `${state.clips.length * 45 + 100}px`;
+        }
+
+        function syncVideos() {
+            state.clips.forEach(clip => {
+                const active = state.time >= clip.timelineStart && state.time <= (clip.timelineStart + clip.duration);
+                clip.mesh.visible = active;
+                if (active) {
+                    clip.video.currentTime = (state.time - clip.timelineStart) + clip.sourceStart;
+                    clip.mesh.material.opacity = calculateOpacity(clip); 
+                    if (!state.isPlaying) clip.video.pause();
+                } else {
+                    clip.video.pause();
+                }
+            });
+        }
+
+        function updatePlayhead() {
+            document.getElementById('playhead').style.left = `${state.time * PROJECT.pxPerSec}px`;
+        }
+
+        window.togglePlayback = function() {
+            state.isPlaying = !state.isPlaying;
+            state.clips.forEach(c => {
+                const active = state.time >= c.timelineStart && state.time <= (c.timelineStart + c.duration);
+                if (active) state.isPlaying ? c.video.play() : c.video.pause();
+            });
+        };
+
+        function generateFFmpeg() {
+            if (state.clips.length === 0) {
+                document.getElementById('prompt-text').innerText = "Import videos to generate FFmpeg command...";
+                return;
+            }
+
+            const sortedClips = [...state.clips].sort((a, b) => a.timelineStart - b.timelineStart);
+
+            let inputs = "", vChains = [], aChains = [], ovlChain = "";
+            let totalT = 0;
+            sortedClips.forEach(c => totalT = Math.max(totalT, c.timelineStart + c.duration));
+
+            sortedClips.forEach((clip, i) => {
+                const originalIdx = state.clips.indexOf(clip);
+                inputs += `-i "${clip.path}" `;
+                
+                const vIn = `[${originalIdx}:v]`, aIn = `[${originalIdx}:a]`, vP = `[v${i}]`, aP = `[a${i}]`;
+                
+                const duration = clip.duration;
+                const fadeInTime = Math.min(clip.fadeIn, duration);
+                const fadeOutTime = Math.min(clip.fadeOut, duration);
+                
+                // CALCULO DE TEMPO GLOBAL
+                const globalStart = clip.timelineStart;
+                const globalEnd = clip.timelineStart + duration;
+                const fadeOutStartGlobal = globalEnd - fadeOutTime;
+
+                // --- VÍDEO ---
+                // 1. Trim: Corta o vídeo original
+                // 2. setpts: Move o timestamp do vídeo para a posição exata da timeline global
+                let vFilter = `trim=start=${clip.sourceStart}:duration=${duration},setpts=PTS-STARTPTS+${globalStart}/TB`;
+                
+                vFilter += `,scale=${Math.round(PROJECT.w * clip.scale)}:${Math.round(PROJECT.h * clip.scale)}`;
+                
+                // Fade In começa no tempo global de início
+                if (fadeInTime > 0) {
+                    vFilter += `,fade=t=in:st=${globalStart}:d=${fadeInTime}`;
+                }
+                // Fade Out começa no tempo global (fim - duração do fade)
+                if (fadeOutTime > 0) {
+                    vFilter += `,fade=t=out:st=${fadeOutStartGlobal}:d=${fadeOutTime}`;
+                }
+                
+                vChains.push(`${vIn}${vFilter}${vP}`);
+
+                // --- ÁUDIO ---
+                const delayMs = Math.round(clip.timelineStart * 1000);
+                // Para áudio, usamos asetpts para sincronizar com a timeline global
+                let aFilter = `atrim=start=${clip.sourceStart}:duration=${duration},asetpts=PTS-STARTPTS+${globalStart}/TB`;
+                
+                if (fadeInTime > 0) aFilter += `,afade=t=in:st=${globalStart}:d=${fadeInTime}`;
+                if (fadeOutTime > 0) aFilter += `,afade=t=out:st=${fadeOutStartGlobal}:d=${fadeOutTime}`;
+                
+                // adelay é necessário para o amix posicionar o áudio corretamente no tempo
+                aFilter += `,volume=${clip.volume},adelay=${delayMs}|${delayMs},aresample=async=1`;
+                aChains.push(`${aIn}${aFilter}${aP}`);
+
+                // --- OVERLAY ---
+                const prev = i === 0 ? `[bg]` : `[ovl${i-1}]`;
+                const next = `[ovl${i}]`;
+                const x = Math.round(960 + clip.mesh.position.x - (PROJECT.w * clip.scale) / 2);
+                const y = Math.round(540 - clip.mesh.position.y - (PROJECT.h * clip.scale) / 2);
+                ovlChain += `${prev}[v${i}]overlay=${x}:${y}:enable='between(t,${globalStart},${globalEnd})'${next},`;
+            });
+
+            if (ovlChain.endsWith(',')) ovlChain = ovlChain.slice(0, -1);
+            const bg = `color=c=black:s=1920x1080:d=${totalT}[bg]`;
+            const finalV = `${bg};${vChains.join(',')};${ovlChain}`;
+            
+            let finalA = "", aOut = "";
+            if (sortedClips.length > 1) {
+                const mix = sortedClips.map((_, i) => `[a${i}]`).join('');
+                aOut = `[outa]`;
+                finalA = `${aChains.join(',')};${mix}amix=inputs=${sortedClips.length}:duration=longest${aOut}`;
+            } else {
+                aOut = `[a0]`;
+                finalA = aChains[0];
+            }
+            const vOut = `[ovl${sortedClips.length - 1}]`;
+            document.getElementById('prompt-text').innerText = `ffmpeg ${inputs} -filter_complex "${finalV};${finalA}" -map "${vOut}" -map "${aOut}" -c:v libx264 -c:a aac -movflags +faststart output.mp4`;
+        }
+
+        window.copyPrompt = function() {
+            navigator.clipboard.writeText(document.getElementById('prompt-text').innerText);
+            const b = document.querySelector('.copy-btn');
+            b.innerText = 'Copiado!';
+            setTimeout(() => b.innerText = 'Copy Command', 2000);
+        };
+
+        const clock = new THREE.Clock();
+        function animate() {
+            requestAnimationFrame(animate);
+            if (state.isPlaying) {
+                state.time += clock.getDelta();
+                updatePlayhead();
+                let max = 0; 
+                state.clips.forEach(c => max = Math.max(max, c.timelineStart + c.duration));
+                if (state.time > max) {
+                    state.time = 0; state.isPlaying = false;
+                    state.clips.forEach(c => { c.video.currentTime = c.sourceStart; c.video.pause(); });
+                    updatePlayhead();
+                } else {
+                    state.clips.forEach(clip => {
+                        const active = state.time >= clip.timelineStart && state.time <= (clip.timelineStart + clip.duration);
+                        clip.mesh.visible = active;
+                        if (active) {
+                            clip.mesh.material.opacity = calculateOpacity(clip);
+                            if (clip.video.paused) {
+                                clip.video.currentTime = (state.time - clip.timelineStart) + clip.sourceStart;
+                                clip.video.play();
+                            }
+                        } else {
+                            clip.video.pause();
+                        }
+                    });
+                }
+            }
+            renderer.render(scene, camera);
+        }
+        animate();
+    </script>
+</body>
+</html>
