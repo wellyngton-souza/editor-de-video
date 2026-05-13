@@ -133,6 +133,7 @@
             box-sizing: border-box; overflow: hidden; z-index: 10;
         }
         .clip-block.text-type { background: #00ccff; }
+        .clip-block.image-type { background: #ffcc00; }
         .resizer {
             position: absolute; right: 0; top: 0; width: 12px; height: 100%;
             cursor: col-resize; background: rgba(0,0,0,0.2);
@@ -144,7 +145,10 @@
     <div id="sidebar">
         <div class="section-title">Media Assets</div>
         <input type="file" id="file-input" multiple accept="video/*" style="display:none" onchange="handleFiles(this.files)">
+        <input type="file" id="image-input" multiple accept="image/*" style="display:none" onchange="handleImages(this.files)">
+        
         <button class="btn" onclick="document.getElementById('file-input').click()">+ Import Video</button>
+        <button class="btn" onclick="document.getElementById('image-input').click()">+ Import Image</button>
         <button class="btn btn-dark" onclick="addTextClip()">+ Add Text Overlay</button>
         
         <div style="display: flex; gap: 8px; margin-bottom: 20px;">
@@ -156,13 +160,13 @@
         <div style="padding-top: 20px; border-top: 1px solid var(--border);">
             <div class="section-title">Properties</div>
             <div id="props-panel" style="display:none;">
-                <!-- Video Props -->
-                <div id="video-props">
+                <!-- Media Props (Video/Image) -->
+                <div id="media-props">
                     <div class="prop-group">
                         <label>File Path</label>
                         <input type="text" id="p-path" oninput="updateClip()">
                     </div>
-                    <div class="prop-group">
+                    <div class="prop-group" id="srcstart-group">
                         <label>Start in Source (s)</label>
                         <input type="number" id="p-srcstart" step="0.1" oninput="updateClip()">
                     </div>
@@ -171,7 +175,7 @@
                             <label>Scale (%)</label>
                             <input type="number" id="p-scale" step="0.01" oninput="updateClip()">
                         </div>
-                        <div class="prop-group">
+                        <div class="prop-group" id="vol-group">
                             <label>Volume (0-2)</label>
                             <input type="number" id="p-volume" step="0.1" oninput="updateClip()">
                         </div>
@@ -260,6 +264,14 @@
     <script type="module">
         import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
 
+        window.addEventListener('keydown', (e) => {
+            if (document.activeElement.tagName === 'INPUT') return;
+            if (e.key.toLowerCase() === 'm') {
+                const box = document.getElementById('prompt-box');
+                box.style.display = (box.style.display === 'none') ? 'block' : 'none';
+            }
+        });
+
         const PROJECT = { w: 1920, h: 1080, aspect: 16/9, pxPerSec: 20 };
         let state = { clips: [], selectedIdx: null, isPlaying: false, time: 0 };
 
@@ -285,6 +297,12 @@
 
         scene.add(new THREE.Mesh(new THREE.PlaneGeometry(PROJECT.w, PROJECT.h), new THREE.MeshBasicMaterial({ color: 0x000000 })));
 
+        const handleGeometry = new THREE.PlaneGeometry(20, 20);
+        const handleMaterial = new THREE.MeshBasicMaterial({ color: 0x00ff88 });
+        const handleMesh = new THREE.Mesh(handleGeometry, handleMaterial);
+        handleMesh.visible = false;
+        scene.add(handleMesh);
+
         function updateLayering() {
             state.clips.forEach((clip, i) => {
                 clip.mesh.position.z = i * 0.1 + 1;
@@ -294,7 +312,6 @@
         function calculateOpacity(clip) {
             const relativeTime = state.time - clip.timelineStart;
             if (relativeTime < 0 || relativeTime > clip.duration) return 0;
-
             let opacity = 1.0;
             if (clip.fadeIn > 0 && relativeTime < clip.fadeIn) {
                 opacity = relativeTime / clip.fadeIn;
@@ -312,12 +329,10 @@
             const metrics = ctx.measureText(text);
             canvas.width = Math.ceil(metrics.width) || 100;
             canvas.height = Math.ceil(size * 1.2) || 50;
-            
             ctx.font = `bold ${size}px Arial`;
             ctx.fillStyle = color;
             ctx.textBaseline = 'middle';
             ctx.fillText(text, 0, canvas.height / 2);
-            
             const tex = new THREE.CanvasTexture(canvas);
             return tex;
         }
@@ -333,11 +348,7 @@
                 const tex = new THREE.VideoTexture(video);
                 const mesh = new THREE.Mesh(
                     new THREE.PlaneGeometry(PROJECT.w, PROJECT.h), 
-                    new THREE.MeshBasicMaterial({ 
-                        map: tex, 
-                        side: THREE.DoubleSide, 
-                        transparent: true 
-                    })
+                    new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, transparent: true })
                 );
                 mesh.visible = false; 
                 scene.add(mesh);
@@ -346,7 +357,7 @@
                     id: Date.now() + Math.random(), 
                     type: 'video',
                     path: file.name, 
-                    timelineStart: 0, 
+                    timelineStart: state.time, 
                     sourceStart: 0,   
                     duration: 5, 
                     scale: 1.0, 
@@ -361,20 +372,44 @@
             generateFFmpeg();
         };
 
+        window.handleImages = function(files) {
+            Array.from(files).forEach(file => {
+                const url = URL.createObjectURL(file);
+                const tex = new THREE.TextureLoader().load(url);
+                
+                const mesh = new THREE.Mesh(
+                    new THREE.PlaneGeometry(PROJECT.w, PROJECT.h), 
+                    new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, transparent: true })
+                );
+                mesh.visible = false; 
+                scene.add(mesh);
+
+                state.clips.push({
+                    id: Date.now() + Math.random(), 
+                    type: 'image',
+                    path: file.name, 
+                    timelineStart: state.time, 
+                    duration: 5, 
+                    scale: 1.0, 
+                    fadeIn: 0,
+                    fadeOut: 0,
+                    mesh, texture: tex
+                });
+            });
+            updateLayering();
+            syncUI();
+            generateFFmpeg();
+        };
+
         window.addTextClip = function() {
             const text = "Novo Texto";
             const size = 60;
             const color = "#00ff88";
             const fontPath = "C\\:/Windows/Fonts/arial.ttf";
             const tex = createTextTexture(text, size, color);
-            
             const mesh = new THREE.Mesh(
                 new THREE.PlaneGeometry(tex.image.width, tex.image.height), 
-                new THREE.MeshBasicMaterial({ 
-                    map: tex, 
-                    transparent: true, 
-                    side: THREE.DoubleSide 
-                })
+                new THREE.MeshBasicMaterial({ map: tex, transparent: true, side: THREE.DoubleSide })
             );
             mesh.visible = false;
             scene.add(mesh);
@@ -386,7 +421,7 @@
                 fontSize: size,
                 textColor: color,
                 fontPath: fontPath,
-                timelineStart: 0,
+                timelineStart: state.time, 
                 duration: 5,
                 fadeIn: 0,
                 fadeOut: 0,
@@ -401,6 +436,7 @@
         let isDragging = false; 
         let isResizing = false; 
         let isViewportDragging = false; 
+        let isViewportResizing = false; 
         let viewportActiveClip = null; 
         let dragOffset = 0;
 
@@ -411,12 +447,16 @@
             mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
             mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
             raycaster.setFromCamera(mouse, camera);
-            
+            const handleIntersect = raycaster.intersectObject(handleMesh);
+            if (handleIntersect.length > 0 && viewportActiveClip) {
+                isViewportResizing = true;
+                e.preventDefault();
+                return;
+            }
             const intersects = raycaster.intersectObjects(state.clips.map(c => c.mesh));
             if (intersects.length > 0) {
                 let hitMesh = (state.selectedIdx !== null && intersects.find(item => item.object === state.clips[state.selectedIdx].mesh)) 
                     ? state.clips[state.selectedIdx].mesh : intersects[0].object;
-
                 viewportActiveClip = state.clips.find(c => c.mesh === hitMesh);
                 isViewportDragging = true;
                 selectClip(state.clips.indexOf(viewportActiveClip));
@@ -445,6 +485,22 @@
         });
 
         window.addEventListener('mousemove', e => {
+            if (isViewportResizing && viewportActiveClip) {
+                const rect = renderer.domElement.getBoundingClientRect();
+                const mouseX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+                const mouseY = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+                const worldX = mouseX * (PROJECT.w / 2);
+                const worldY = mouseY * (PROJECT.h / 2);
+                const dx = worldX - viewportActiveClip.mesh.position.x;
+                const dy = worldY - viewportActiveClip.mesh.position.y;
+                const dist = Math.sqrt(dx*dx + dy*dy);
+                const newScale = dist / (PROJECT.w / 2 * 0.707); 
+                viewportActiveClip.scale = Math.max(0.1, newScale);
+                viewportActiveClip.mesh.scale.set(viewportActiveClip.scale, viewportActiveClip.scale, 1);
+                document.getElementById('p-scale').value = viewportActiveClip.scale.toFixed(2);
+                generateFFmpeg();
+                return;
+            }
             if (isViewportDragging && viewportActiveClip) {
                 const rect = renderer.domElement.getBoundingClientRect();
                 const deltaX = e.movementX * (PROJECT.w / rect.width);
@@ -456,7 +512,6 @@
                 generateFFmpeg();
                 return;
             }
-
             if (!activeClip) return;
             const rect = trackArea.getBoundingClientRect();
             if (isDragging) {
@@ -469,7 +524,7 @@
 
         window.addEventListener('mouseup', () => { 
             isDragging = false; isResizing = false; activeClip = null; 
-            isViewportDragging = false; viewportActiveClip = null;
+            isViewportDragging = false; isViewportResizing = false; viewportActiveClip = null;
             renderer.domElement.style.cursor = 'default';
         });
 
@@ -478,24 +533,29 @@
             const clip = state.clips[idx];
             document.getElementById('props-panel').style.display = 'block';
             
-            document.getElementById('video-props').style.display = clip.type === 'video' ? 'block' : 'none';
+            const isMedia = clip.type === 'video' || clip.type === 'image';
+            document.getElementById('media-props').style.display = isMedia ? 'block' : 'none';
             document.getElementById('text-props').style.display = clip.type === 'text' ? 'block' : 'none';
-            
-            // ESCONDER FADES SE FOR TEXTO
-            document.getElementById('fade-props').style.display = clip.type === 'video' ? 'flex' : 'none';
+            document.getElementById('fade-props').style.display = isMedia ? 'flex' : 'none';
 
-            if(clip.type === 'video') {
+            if(isMedia) {
                 document.getElementById('p-path').value = clip.path;
-                document.getElementById('p-srcstart').value = clip.sourceStart;
                 document.getElementById('p-scale').value = clip.scale;
-                document.getElementById('p-volume').value = clip.volume;
+                
+                // Somente vídeos têm sourceStart e volume
+                const isVideo = clip.type === 'video';
+                document.getElementById('srcstart-group').style.display = isVideo ? 'block' : 'none';
+                document.getElementById('vol-group').style.display = isVideo ? 'block' : 'none';
+                if(isVideo) {
+                    document.getElementById('p-srcstart').value = clip.sourceStart;
+                    document.getElementById('p-volume').value = clip.volume;
+                }
             } else {
                 document.getElementById('p-text-content').value = clip.text;
                 document.getElementById('p-text-font').value = clip.fontPath;
                 document.getElementById('p-text-size').value = clip.fontSize;
                 document.getElementById('p-text-color').value = clip.textColor;
             }
-
             document.getElementById('p-duration').value = clip.duration; 
             document.getElementById('p-x').value = Math.round(clip.mesh.position.x);
             document.getElementById('p-y').value = Math.round(clip.mesh.position.y);
@@ -507,31 +567,30 @@
         window.updateClip = function() {
             if (state.selectedIdx === null) return;
             const clip = state.clips[state.selectedIdx];
-            
             clip.duration = parseFloat(document.getElementById('p-duration').value) || 0.1; 
             clip.fadeIn = parseFloat(document.getElementById('p-fadein').value) || 0;
             clip.fadeOut = parseFloat(document.getElementById('p-fadeout').value) || 0;
             clip.mesh.position.x = parseFloat(document.getElementById('p-x').value) || 0;
             clip.mesh.position.y = parseFloat(document.getElementById('p-y').value) || 0;
 
-            if(clip.type === 'video') {
+            if(clip.type === 'video' || clip.type === 'image') {
                 clip.path = document.getElementById('p-path').value;
-                clip.sourceStart = parseFloat(document.getElementById('p-srcstart').value) || 0;
                 clip.scale = parseFloat(document.getElementById('p-scale').value) || 1;
-                clip.volume = parseFloat(document.getElementById('p-volume').value) || 1;
                 clip.mesh.scale.set(clip.scale, clip.scale, 1);
+                if(clip.type === 'video') {
+                    clip.sourceStart = parseFloat(document.getElementById('p-srcstart').value) || 0;
+                    clip.volume = parseFloat(document.getElementById('p-volume').value) || 1;
+                }
             } else {
                 clip.text = document.getElementById('p-text-content').value;
                 clip.fontPath = document.getElementById('p-text-font').value;
                 clip.fontSize = parseInt(document.getElementById('p-text-size').value) || 60;
                 clip.textColor = document.getElementById('p-text-color').value;
-                
                 const newTex = createTextTexture(clip.text, clip.fontSize, clip.textColor);
                 clip.texture = newTex;
                 clip.mesh.material.map = newTex;
                 clip.mesh.geometry = new THREE.PlaneGeometry(newTex.image.width, newTex.image.height);
             }
-            
             syncUI(); 
             generateFFmpeg();
         };
@@ -572,51 +631,40 @@
                 clip.duration = offsetFromStart;
                 const newClipDuration = originalDuration - clip.duration;
                 
+                let newMesh;
                 if (clip.type === 'video') {
                     const video = document.createElement('video');
                     video.src = clip.video.src;
                     video.muted = false; video.loop = true;
                     const tex = new THREE.VideoTexture(video);
-                    const mesh = new THREE.Mesh(
-                        new THREE.PlaneGeometry(PROJECT.w, PROJECT.h), 
-                        new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, transparent: true })
-                    );
-                    mesh.position.copy(clip.mesh.position);
-                    mesh.scale.copy(clip.mesh.scale);
-                    mesh.visible = false;
-                    scene.add(mesh);
+                    newMesh = new THREE.Mesh(new THREE.PlaneGeometry(PROJECT.w, PROJECT.h), new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, transparent: true }));
+                    newMesh.visible = false;
+                    scene.add(newMesh);
                     state.clips.push({
-                        id: Date.now() + Math.random(),
-                        type: 'video',
-                        path: clip.path, 
-                        timelineStart: splitTime, 
-                        sourceStart: clip.sourceStart + offsetFromStart, 
-                        duration: newClipDuration, 
-                        scale: clip.scale, 
-                        volume: clip.volume,
-                        fadeIn: 0, fadeOut: clip.fadeOut,
-                        mesh, video, texture: tex
+                        id: Date.now() + Math.random(), type: 'video', path: clip.path, 
+                        timelineStart: splitTime, sourceStart: clip.sourceStart + offsetFromStart, 
+                        duration: newClipDuration, scale: clip.scale, volume: clip.volume,
+                        fadeIn: 0, fadeOut: clip.fadeOut, mesh: newMesh, video, texture: tex
+                    });
+                } else if (clip.type === 'image') {
+                    const tex = new THREE.TextureLoader().load(URL.createObjectURL(new Blob([clip.texture.image], {type: 'image/jpeg'}))); // Simplified for split
+                    newMesh = new THREE.Mesh(new THREE.PlaneGeometry(PROJECT.w, PROJECT.h), new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, transparent: true }));
+                    newMesh.visible = false;
+                    scene.add(newMesh);
+                    state.clips.push({
+                        id: Date.now() + Math.random(), type: 'image', path: clip.path, 
+                        timelineStart: splitTime, duration: newClipDuration, scale: clip.scale,
+                        fadeIn: 0, fadeOut: clip.fadeOut, mesh: newMesh, texture: tex
                     });
                 } else {
                     const tex = createTextTexture(clip.text, clip.fontSize, clip.textColor);
-                    const mesh = new THREE.Mesh(
-                        new THREE.PlaneGeometry(tex.image.width, tex.image.height), 
-                        new THREE.MeshBasicMaterial({ map: tex, transparent: true, side: THREE.DoubleSide })
-                    );
-                    mesh.position.copy(clip.mesh.position);
-                    mesh.visible = false;
-                    scene.add(mesh);
+                    newMesh = new THREE.Mesh(new THREE.PlaneGeometry(tex.image.width, tex.image.height), new THREE.MeshBasicMaterial({ map: tex, transparent: true, side: THREE.DoubleSide }));
+                    newMesh.visible = false;
+                    scene.add(newMesh);
                     state.clips.push({
-                        id: Date.now() + Math.random(),
-                        type: 'text',
-                        text: clip.text,
-                        fontSize: clip.fontSize,
-                        textColor: clip.textColor,
-                        fontPath: clip.fontPath,
-                        timelineStart: splitTime, 
-                        duration: newClipDuration, 
-                        fadeIn: 0, fadeOut: clip.fadeOut,
-                        mesh, texture: tex
+                        id: Date.now() + Math.random(), type: 'text', text: clip.text,
+                        fontSize: clip.fontSize, textColor: clip.textColor, fontPath: clip.fontPath,
+                        timelineStart: splitTime, duration: newClipDuration, fadeIn: 0, fadeOut: clip.fadeOut, mesh: newMesh, texture: tex
                     });
                 }
                 updateLayering();
@@ -651,16 +699,16 @@
             state.clips.forEach((clip, i) => {
                 const item = document.createElement('div');
                 item.className = `asset-item ${state.selectedIdx === i ? 'active' : ''}`;
-                item.innerText = clip.type === 'video' ? clip.path : `Text: ${clip.text}`;
+                item.innerText = clip.type === 'video' ? `[Vid] ${clip.path}` : (clip.type === 'image' ? `[Img] ${clip.path}` : `[Txt] ${clip.text}`);
                 item.onclick = () => selectClip(i);
                 list.appendChild(item);
                 const block = document.createElement('div');
-                block.className = `clip-block ${clip.type === 'text' ? 'text-type' : ''}`;
+                block.className = `clip-block ${clip.type === 'text' ? 'text-type' : (clip.type === 'image' ? 'image-type' : '')}`;
                 block.dataset.id = clip.id;
                 block.style.top = `${i * 45 + 10}px`;
                 block.style.left = `${clip.timelineStart * PROJECT.pxPerSec}px`;
                 block.style.width = `${clip.duration * PROJECT.pxPerSec}px`;
-                block.innerText = clip.type === 'video' ? clip.path : clip.text;
+                block.innerText = clip.type === 'video' ? clip.path : (clip.type === 'image' ? clip.path : clip.text);
                 const res = document.createElement('div');
                 res.className = 'resizer';
                 res.dataset.id = clip.id;
@@ -699,7 +747,7 @@
                     if (active) state.isPlaying ? c.video.play() : c.video.pause();
                 }
             });
-        };
+        }
 
         function generateFFmpeg() {
             if (state.clips.length === 0) {
@@ -707,52 +755,89 @@
                 return;
             }
 
-            const sortedClips = [...state.clips].sort((a, b) => a.timelineStart - b.timelineStart);
-
-            let inputs = "", vChains = [], aChains = [], ovlChain = "";
+            // 1. Mapeamento de Inputs
+            let inputCounter = 0;
+            let inputs = "";
             let totalT = 0;
-            sortedClips.forEach(c => totalT = Math.max(totalT, c.timelineStart + c.duration));
+
+            state.clips.forEach(clip => {
+                if (clip.type === 'video' || clip.type === 'image') {
+                    clip.inputIndex = inputCounter++; 
+                    inputs += (clip.type === 'image' ? `-loop 1 ` : ``) + `-i "${clip.path}" `;
+                } else {
+                    clip.inputIndex = null; 
+                }
+                totalT = Math.max(totalT, clip.timelineStart + clip.duration);
+            });
+
+            const sortedClips = [...state.clips].sort((a, b) => a.timelineStart - b.timelineStart);
+            let vChains = [], aChains = [], ovlChain = "";
 
             sortedClips.forEach((clip, i) => {
-                const originalIdx = state.clips.indexOf(clip);
                 const globalStart = clip.timelineStart;
                 const globalEnd = clip.timelineStart + clip.duration;
                 
-                if (clip.type === 'video') {
-                    inputs += `-i "${clip.path}" `;
-                    const vIn = `[${originalIdx}:v]`, aIn = `[${originalIdx}:a]`, vP = `[v${i}]`, aP = `[a${i}]`;
+                if (clip.type === 'video' || clip.type === 'image') {
+                    const vIn = `[${clip.inputIndex}:v]`, vP = `[v${i}]`;
                     const duration = clip.duration;
                     const fadeInTime = Math.min(clip.fadeIn, duration);
                     const fadeOutTime = Math.min(clip.fadeOut, duration);
                     const fadeOutStartGlobal = globalEnd - fadeOutTime;
 
-                    let vFilter = `trim=start=${clip.sourceStart}:duration=${duration},setpts=PTS-STARTPTS+${globalStart}/TB`;
-                    vFilter += `,scale=${Math.round(PROJECT.w * clip.scale)}:${Math.round(PROJECT.h * clip.scale)}`;
+                    let vFilter = "";
+                    if (clip.type === 'video') {
+                        vFilter = `trim=start=${clip.sourceStart}:duration=${duration},setpts=PTS-STARTPTS`;
+                        vFilter += `,setpts=PTS+${globalStart}/TB`;
+                    } else {
+                        vFilter = `setpts=PTS-STARTPTS,setpts=PTS+${globalStart}/TB`;
+                    }
+
+                    let finalW = PROJECT.w * clip.scale;
+                    let finalH = PROJECT.h * clip.scale;
+                    let overlayX = 0;
+                    let overlayY = 0;
+
+                    if (clip.scale > 4) { 
+                        vFilter += `,scale=${PROJECT.w}:${PROJECT.h}`;
+                        const cropW = Math.round(PROJECT.w / clip.scale);
+                        const cropH = Math.round(PROJECT.h / clip.scale);
+                        let cropX = Math.round((PROJECT.w / 2) - (clip.mesh.position.x / clip.scale) - (cropW / 2));
+                        let cropY = Math.round((PROJECT.h / 2) + (clip.mesh.position.y / clip.scale) - (cropH / 2));
+                        cropX = Math.max(0, Math.min(cropX, PROJECT.w - cropW));
+                        cropY = Math.max(0, Math.min(cropY, PROJECT.h - cropH));
+                        vFilter += `,crop=${cropW}:${cropH}:${cropX}:${cropY},scale=${PROJECT.w}:${PROJECT.h}`;
+                        overlayX = 0;
+                        overlayY = 0;
+                    } else {
+                        vFilter += `,scale=${Math.round(finalW)}:${Math.round(finalH)}`;
+                        overlayX = Math.round(960 + clip.mesh.position.x - finalW / 2);
+                        overlayY = Math.round(540 - clip.mesh.position.y - finalH / 2);
+                    }
+
                     if (fadeInTime > 0) vFilter += `,fade=t=in:st=${globalStart}:d=${fadeInTime}`;
                     if (fadeOutTime > 0) vFilter += `,fade=t=out:st=${fadeOutStartGlobal}:d=${fadeOutTime}`;
                     vChains.push(`${vIn}${vFilter}${vP}`);
 
-                    const delayMs = Math.round(clip.timelineStart * 1000);
-                    let aFilter = `atrim=start=${clip.sourceStart}:duration=${duration},asetpts=PTS-STARTPTS+${globalStart}/TB`;
-                    if (fadeInTime > 0) aFilter += `,afade=t=in:st=${globalStart}:d=${fadeInTime}`;
-                    if (fadeOutTime > 0) aFilter += `,afade=t=out:st=${fadeOutStartGlobal}:d=${fadeOutTime}`;
-                    aFilter += `,volume=${clip.volume},adelay=${delayMs}|${delayMs},aresample=async=1`;
-                    aChains.push(`${aIn}${aFilter}${aP}`);
+                    if (clip.type === 'video') {
+                        const aIn = `[${clip.inputIndex}:a]`, aP = `[a${i}]`;
+                        const delayMs = Math.round(clip.timelineStart * 1000);
+                        let aFilter = `atrim=start=${clip.sourceStart}:duration=${duration},asetpts=PTS-STARTPTS`;
+                        aFilter += `,asetpts=PTS+${globalStart}/TB`;
+                        if (fadeInTime > 0) aFilter += `,afade=t=in:st=${globalStart}:d=${fadeInTime}`;
+                        if (fadeOutTime > 0) aFilter += `,afade=t=out:st=${fadeOutStartGlobal}:d=${fadeOutTime}`;
+                        aFilter += `,volume=${clip.volume},adelay=${delayMs}|${delayMs},aresample=async=1`;
+                        aChains.push(`${aIn}${aFilter}${aP}`);
+                    }
 
                     const prev = i === 0 ? `[bg]` : `[ovl${i-1}]`;
                     const next = `[ovl${i}]`;
-                    const x = Math.round(960 + clip.mesh.position.x - (PROJECT.w * clip.scale) / 2);
-                    const y = Math.round(540 + clip.mesh.position.y - (PROJECT.h * clip.scale) / 2);
-                    ovlChain += `${prev}[v${i}]overlay=${x}:${y}:enable='between(t,${globalStart},${globalEnd})'${next},`;
+                    ovlChain += `${prev}[v${i}]overlay=${overlayX}:${overlayY}:enable='between(t,${globalStart},${globalEnd})'${next},`;
                 } else {
-                    // TEXT TYPE (CENTRALIZADO E COM FADE CORRIGIDO)
                     const prev = i === 0 ? `[bg]` : `[ovl${i-1}]`;
                     const next = `[ovl${i}]`;
-                    
                     const isCenterX = clip.mesh.position.x === 0;
                     const posX = isCenterX ? '(w-tw)/2' : Math.round(960 + clip.mesh.position.x);
                     const posY = Math.round(540 - clip.mesh.position.y);
-                    
                     let finalColor = clip.textColor;
                     if (clip.fadeIn > 0 || clip.fadeOut > 0) {
                         const alphaExpr = `if(lt(t,${globalStart}+${clip.fadeIn}),(t-${globalStart})/${clip.fadeIn},if(lt(t,${globalEnd}-${clip.fadeOut}),1,(${globalEnd}-t)/${clip.fadeOut}))`;
@@ -765,27 +850,22 @@
             if (ovlChain.endsWith(',')) ovlChain = ovlChain.slice(0, -1);
             const bg = `color=c=black:s=1920x1080:d=${totalT}[bg]`;
             const finalVString = `${bg};${vChains.join(',')};${ovlChain}`;
-            
             const vOut = `[ovl${sortedClips.length - 1}]`;
             
             let finalA = "", aOut = "";
-            if (aChains.length > 1) {
-                const allAudioInputs = [];
-                sortedClips.forEach((clip, i) => {
-                    if(clip.type === 'video') allAudioInputs.push(`[a${i}]`);
-                });
+            if (aChains.length > 0) {
+                const audioLabels = aChains.map((chain, idx) => `[a${idx}]`);
                 aOut = `[outa]`;
-                finalA = `${aChains.join(',')};${allAudioInputs.join('')}amix=inputs=${allAudioInputs.length}:duration=longest${aOut}`;
-            } else if (aChains.length === 1) {
-                aOut = `[a0]`;
-                finalA = aChains[0];
+                finalA = `${aChains.join(',')};${audioLabels.join('')}amix=inputs=${aChains.length}:duration=longest${aOut}`;
             } else {
                 aOut = `[silent]`;
                 finalA = `anullsrc=channel_layout=stereo:sample_rate=44100[silent]`;
             }
             
-            document.getElementById('prompt-text').innerText = `ffmpeg ${inputs} -filter_complex "${finalVString};${finalA}" -map "${vOut}" -map "${aOut}" -c:v libx264 -c:a aac -movflags +faststart output.mp4`;
+            // ADICIONADO: -t ${totalT} para forçar o fim do vídeo no tempo correto
+            document.getElementById('prompt-text').innerText = `ffmpeg ${inputs} -filter_complex "${finalVString};${finalA}" -map "${vOut}" -map "${aOut}" -t ${totalT} -c:v libx264 -c:a aac -movflags +faststart output.mp4`;
         }
+
 
         window.copyPrompt = function() {
             navigator.clipboard.writeText(document.getElementById('prompt-text').innerText);
@@ -797,6 +877,16 @@
         const clock = new THREE.Clock();
         function animate() {
             requestAnimationFrame(animate);
+            if (state.selectedIdx !== null) {
+                const clip = state.clips[state.selectedIdx];
+                handleMesh.visible = true;
+                handleMesh.position.x = clip.mesh.position.x + (PROJECT.w / 2 * clip.scale);
+                handleMesh.position.y = clip.mesh.position.y - (PROJECT.h / 2 * clip.scale);
+                handleMesh.position.z = clip.mesh.position.z + 0.1;
+            } else {
+                handleMesh.visible = false;
+            }
+
             if (state.isPlaying) {
                 state.time += clock.getDelta();
                 updatePlayhead();
@@ -810,14 +900,13 @@
                             c.video.pause(); 
                         }
                     });
-                    updatePlayhead();
                 } else {
                     state.clips.forEach(clip => {
                         const active = state.time >= clip.timelineStart && state.time <= (clip.timelineStart + clip.duration);
                         clip.mesh.visible = active;
                         if (active) {
                             clip.mesh.material.opacity = calculateOpacity(clip);
-                            if (clip.type === 'video') {
+                            if(clip.type === 'video') {
                                 if (clip.video.paused) {
                                     clip.video.currentTime = (state.time - clip.timelineStart) + clip.sourceStart;
                                     clip.video.play();
