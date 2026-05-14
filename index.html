@@ -279,7 +279,6 @@
                 window.togglePlayback();
             }
 
-            // ATUALIZADO: Atalho 'S' para Split
             if (e.key.toLowerCase() === 's') {
                 window.splitClip();
             }
@@ -338,14 +337,36 @@
         function createTextTexture(text, size, color) {
             const canvas = document.createElement('canvas');
             const ctx = canvas.getContext('2d');
+            
+            // 1. Definir fonte primeiro para medir o texto
             ctx.font = `bold ${size}px Arial`;
             const metrics = ctx.measureText(text);
-            canvas.width = Math.ceil(metrics.width) || 100;
-            canvas.height = Math.ceil(size * 1.2) || 50;
+            
+            // 2. Definir tamanho do canvas com uma folga (padding) 
+            // para a borda não ser cortada nas extremidades
+            const padding = 10; 
+            canvas.width = Math.ceil(metrics.width) + padding * 2;
+            canvas.height = Math.ceil(size * 1.5);
+            
+            // 3. Re-configurar a fonte e alinhamentos ANTES de desenhar
             ctx.font = `bold ${size}px Arial`;
-            ctx.fillStyle = color;
             ctx.textBaseline = 'middle';
-            ctx.fillText(text, 0, canvas.height / 2);
+            ctx.textAlign = 'left';
+
+            // Coordenadas fixas para ambos (X = padding, Y = centro do canvas)
+            const x = padding;
+            const y = canvas.height / 2;
+
+            // 4. Desenhar a BORDA primeiro
+            ctx.strokeStyle = 'black';
+            ctx.lineWidth = 3;
+            ctx.lineJoin = 'round';
+            ctx.strokeText(text, x, y);
+
+            // 5. Desenhar o PREENCHIMENTO por cima da borda
+            ctx.fillStyle = color;
+            ctx.fillText(text, x, y);
+
             const tex = new THREE.CanvasTexture(canvas);
             return tex;
         }
@@ -417,7 +438,7 @@
         window.addTextClip = function() {
             const text = "Novo Texto";
             const size = 60;
-            const color = "#00ff88";
+            const color = "#FFFF00";
             const fontPath = "C\\:/Windows/Fonts/arial.ttf";
             const tex = createTextTexture(text, size, color);
             const mesh = new THREE.Mesh(
@@ -434,6 +455,8 @@
                 fontSize: size,
                 textColor: color,
                 fontPath: fontPath,
+                borderW: 3,
+                borderC: 'black',
                 timelineStart: state.time, 
                 duration: 5,
                 fadeIn: 0,
@@ -511,7 +534,7 @@
                 viewportActiveClip.scale = Math.max(0.1, newScale);
                 viewportActiveClip.mesh.scale.set(viewportActiveClip.scale, viewportActiveClip.scale, 1);
                 document.getElementById('p-scale').value = viewportActiveClip.scale.toFixed(2);
-                generateFFmpeg();
+                // REMOVIDO generateFFmpeg() daqui para economizar CPU
                 return;
             }
             if (isViewportDragging && viewportActiveClip) {
@@ -522,7 +545,7 @@
                 viewportActiveClip.mesh.position.y += deltaY;
                 document.getElementById('p-x').value = Math.round(viewportActiveClip.mesh.position.x);
                 document.getElementById('p-y').value = Math.round(viewportActiveClip.mesh.position.y);
-                generateFFmpeg();
+                // REMOVIDO generateFFmpeg() daqui para economizar CPU
                 return;
             }
             if (!activeClip) return;
@@ -565,13 +588,14 @@
                 const finalEnd = snapEnd !== null ? snapEnd : rawEnd;
                 activeClip.duration = Math.max(0.1, finalEnd - activeClip.timelineStart);
             }
-            if (isDragging || isResizing) { syncUI(); generateFFmpeg(); }
+            if (isDragging || isResizing) { syncUI(); } // REMOVIDO generateFFmpeg() daqui
         });
 
         window.addEventListener('mouseup', () => { 
             isDragging = false; isResizing = false; activeClip = null; 
             isViewportDragging = false; isViewportResizing = false; viewportActiveClip = null;
             renderer.domElement.style.cursor = 'default';
+            generateFFmpeg(); // ATUALIZADO: Gera o comando apenas quando termina de arrastar/escalar
         });
 
         function selectClip(idx) {
@@ -612,34 +636,60 @@
         window.updateClip = function() {
             if (state.selectedIdx === null) return;
             const clip = state.clips[state.selectedIdx];
-            clip.duration = parseFloat(document.getElementById('p-duration').value) || 0.1; 
-            clip.fadeIn = parseFloat(document.getElementById('p-fadein').value) || 0;
-            clip.fadeOut = parseFloat(document.getElementById('p-fadeout').value) || 0;
-            clip.mesh.position.x = parseFloat(document.getElementById('p-x').value) || 0;
-            clip.mesh.position.y = parseFloat(document.getElementById('p-y').value) || 0;
+            
+            // Função auxiliar para atualizar apenas se o input tiver valor
+            const updateIfValid = (id, prop, isInt = false) => {
+                const val = document.getElementById(id).value;
+                if (val !== "") {
+                    clip[prop] = isInt ? parseInt(val) : parseFloat(val);
+                    return true;
+                }
+                return false;
+            };
+
+            // Atualiza propriedades básicas apenas se houver valor no input
+            updateIfValid('p-duration', 'duration');
+            updateIfValid('p-fadein', 'fadeIn');
+            updateIfValid('p-fadeout', 'fadeOut');
+            updateIfValid('p-x', 'meshPositionX'); // Especial para posição
+            updateIfValid('p-y', 'meshPositionY');
+
+            // Aplica posições ao mesh
+            clip.mesh.position.x = parseFloat(document.getElementById('p-x').value);
+            clip.mesh.position.y = parseFloat(document.getElementById('p-y').value);
 
             if(clip.type === 'video' || clip.type === 'image') {
                 clip.path = document.getElementById('p-path').value;
-                clip.scale = parseFloat(document.getElementById('p-scale').value) || 1;
-                clip.mesh.scale.set(clip.scale, clip.scale, 1);
+                const scaleVal = document.getElementById('p-scale').value;
+                if (scaleVal !== "") {
+                    clip.scale = parseFloat(scaleVal);
+                    clip.mesh.scale.set(clip.scale, clip.scale, 1);
+                }
                 if(clip.type === 'video') {
-                    clip.sourceStart = parseFloat(document.getElementById('p-srcstart').value) || 0;
-                    clip.volume = parseFloat(document.getElementById('p-volume').value) || 1;
+                    updateIfValid('p-srcstart', 'sourceStart');
+                    updateIfValid('p-volume', 'volume');
                     clip.video.volume = Math.min(1, clip.volume);
                 }
             } else {
+                // Para texto, atualizamos o conteúdo e recriamos a textura
                 clip.text = document.getElementById('p-text-content').value;
                 clip.fontPath = document.getElementById('p-text-font').value;
-                clip.fontSize = parseInt(document.getElementById('p-text-size').value) || 60;
+                
+                const sizeVal = document.getElementById('p-text-size').value;
+                if (sizeVal !== "") clip.fontSize = parseInt(sizeVal);
+                
                 clip.textColor = document.getElementById('p-text-color').value;
+                
                 const newTex = createTextTexture(clip.text, clip.fontSize, clip.textColor);
                 clip.texture = newTex;
                 clip.mesh.material.map = newTex;
                 clip.mesh.geometry = new THREE.PlaneGeometry(newTex.image.width, newTex.image.height);
             }
+            
             syncUI(); 
             generateFFmpeg();
         };
+
 
         window.moveLayer = function(dir) {
             if (state.selectedIdx === null) return;
@@ -714,7 +764,6 @@
                     });
                 }
 
-                // ATUALIZADO: Seleciona o lado direito (novo clipe) após o split
                 const newIndex = state.clips.length - 1;
                 selectClip(newIndex);
 
@@ -808,6 +857,7 @@
             }
 
             let inputCounter = 0;
+            let audioCounter = 0; 
             let inputs = "";
             let totalT = 0;
 
@@ -822,7 +872,6 @@
             });
 
             const layerClipped = state.clips; 
-            
             let vChains = [], aChains = [], ovlChain = "";
 
             layerClipped.forEach((clip, i) => {
@@ -871,14 +920,17 @@
                     vChains.push(`${vIn}${vFilter}${vP}`);
 
                     if (clip.type === 'video') {
-                        const aIn = `[${clip.inputIndex}:a]`, aP = `[a${i}]`;
+                        const aIn = `[${clip.inputIndex}:a]`;
+                        const aP = `[a${audioCounter}]`;
                         const delayMs = Math.round(clip.timelineStart * 1000);
                         let aFilter = `atrim=start=${clip.sourceStart}:duration=${duration},asetpts=PTS-STARTPTS`;
                         aFilter += `,asetpts=PTS+${globalStart}/TB`;
                         if (fadeInTime > 0) aFilter += `,afade=t=in:st=${globalStart}:d=${fadeInTime}`;
                         if (fadeOutTime > 0) aFilter += `,afade=t=out:st=${fadeOutStartGlobal}:d=${fadeOutTime}`;
-                        aFilter += `,volume=${clip.volume},adelay=${delayMs}|${delayMs},aresample=async=1`;
+                        // Importante: aresample garante que a frequência seja a mesma para o amix
+                        aFilter += `,volume=${clip.volume},adelay=${delayMs}|${delayMs},aresample=44100`;
                         aChains.push(`${aIn}${aFilter}${aP}`);
+                        audioCounter++;
                     }
 
                     const prev = i === 0 ? `[bg]` : `[ovl${i-1}]`;
@@ -890,16 +942,14 @@
                     const texW = clip.texture.image.width;
                     const isCenterX = clip.mesh.position.x === 0;
                     const posX = isCenterX ? '(w-tw)/2' : Math.round(960 + clip.mesh.position.x - (texW / 2));
-                    
                     const verticalOffset = clip.fontSize * 0.1; 
                     const posY = Math.round(540 - clip.mesh.position.y - (clip.fontSize / 2) + verticalOffset);
-                    
                     let finalColor = clip.textColor;
                     if (clip.fadeIn > 0 || clip.fadeOut > 0) {
                         const alphaExpr = `if(lt(t,${globalStart}+${clip.fadeIn}),(t-${globalStart})/${clip.fadeIn},if(lt(t,${globalEnd}-${clip.fadeOut}),1,(${globalEnd}-t)/${clip.fadeOut}))`;
                         finalColor = `${clip.textColor}@${alphaExpr}`;
                     }
-                    ovlChain += `${prev}drawtext=text='${clip.text}':fontfile='${clip.fontPath}':x=${posX}:y=${posY}:fontsize=${clip.fontSize}:fontcolor=${finalColor}:enable='between(t,${globalStart},${globalEnd})'${next},`;
+                    ovlChain += `${prev}drawtext=text='${clip.text}':fontfile='${clip.fontPath}':x=${posX}:y=${posY}:fontsize=${clip.fontSize}:fontcolor=${finalColor}:borderw=3:bordercolor=black:enable='between(t,${globalStart},${globalEnd})'${next},`;
                 }
             });
 
@@ -908,18 +958,25 @@
             const finalVString = `${bg};${vChains.join(',')};${ovlChain}`;
             const vOut = `[ovl${layerClipped.length - 1}]`;
             
-            let finalA = "", aOut = "";
+            // --- CORREÇÃO DO ÁUDIO ---
+            // Criamos um fluxo de silêncio absoluto que dura todo o projeto
+            const silentBase = `anullsrc=channel_layout=stereo:sample_rate=44100:d=${totalT}[silent]`;
+            let finalA = "";
+            let aOut = "[outa]";
+
             if (aChains.length > 0) {
-                const audioLabels = aChains.map((chain, idx) => `[a${idx}]`);
-                aOut = `[outa]`;
-                finalA = `${aChains.join(',')};${audioLabels.join('')}amix=inputs=${aChains.length}:duration=longest${aOut}`;
+                // Listamos o silêncio + todos os vídeos: [silent][a0][a1]...
+                const audioLabels = `[silent]` + Array.from({length: audioCounter}, (_, i) => `[a${i}]`).join('');
+                // Mixamos todos eles. O número de inputs é audioCounter + 1 (por causa do silêncio)
+                finalA = `${silentBase};${aChains.join(',')};${audioLabels}amix=inputs=${audioCounter + 1}:duration=longest${aOut}`;
             } else {
-                aOut = `[silent]`;
-                finalA = `anullsrc=channel_layout=stereo:sample_rate=44100[silent]`;
+                finalA = `${silentBase}`;
+                aOut = "[silent]";
             }
             
             document.getElementById('prompt-text').innerText = `ffmpeg ${inputs} -filter_complex "${finalVString};${finalA}" -map "${vOut}" -map "${aOut}" -t ${totalT} -c:v libx264 -c:a aac -movflags +faststart output.mp4`;
         }
+
 
         window.copyPrompt = function() {
             navigator.clipboard.writeText(document.getElementById('prompt-text').innerText);
@@ -951,7 +1008,7 @@
                     state.clips.forEach(c => { 
                         if(c.type === 'video') {
                             c.video.currentTime = c.sourceStart; 
-                            c.video.pause(); 
+                            c.video.pause();
                         }
                     });
                 } else {
@@ -976,5 +1033,5 @@
         }
         animate();
     </script>
-</body>
-</html>
+</body
+>
