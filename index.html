@@ -149,8 +149,8 @@
 
     <div id="sidebar">
         <div class="section-title">Media Assets</div>
-        <input type="file" id="file-input" multiple accept="video/*" style="display:none" onchange="handleFiles(this.files)">
-        <input type="file" id="image-input" multiple accept="image/*" style="display:none" onchange="handleImages(this.files)">
+        <input type="file" id="file-input" multiple accept="video/*" style="display:none" onchange="handleFiles(this.files); this.value=''">
+        <input type="file" id="image-input" multiple accept="image/*" style="display:none" onchange="handleImages(this.files); this.value=''">
         
         <button class="btn" onclick="document.getElementById('file-input').click()">+ Import Video</button>
         <button class="btn" onclick="document.getElementById('image-input').click()">+ Import Image</button>
@@ -864,7 +864,8 @@
             state.clips.forEach(clip => {
                 if (clip.type === 'video' || clip.type === 'image') {
                     clip.inputIndex = inputCounter++; 
-                    inputs += (clip.type === 'image' ? `-loop 1 ` : ``) + `-i "${clip.path}" `;
+                    const ssFlag = (clip.type === 'video' && clip.sourceStart > 0) ? `-ss ${clip.sourceStart} ` : ``;
+                    inputs += (clip.type === 'image' ? `-loop 1 ` : ``) + `${ssFlag}-i "${clip.path}" `;
                 } else {
                     clip.inputIndex = null; 
                 }
@@ -887,7 +888,8 @@
 
                     let vFilter = "";
                     if (clip.type === 'video') {
-                        vFilter = `trim=start=${clip.sourceStart}:duration=${duration},setpts=PTS-STARTPTS`;
+                        // -ss já foi aplicado no input, então trim começa do 0
+                        vFilter = `trim=start=0:duration=${duration},setpts=PTS-STARTPTS`;
                         vFilter += `,setpts=PTS+${globalStart}/TB`;
                     } else {
                         vFilter = `setpts=PTS-STARTPTS,setpts=PTS+${globalStart}/TB`;
@@ -923,7 +925,8 @@
                         const aIn = `[${clip.inputIndex}:a]`;
                         const aP = `[a${audioCounter}]`;
                         const delayMs = Math.round(clip.timelineStart * 1000);
-                        let aFilter = `atrim=start=${clip.sourceStart}:duration=${duration},asetpts=PTS-STARTPTS`;
+                        // -ss já foi aplicado no input, então atrim começa do 0
+                        let aFilter = `atrim=start=0:duration=${duration},asetpts=PTS-STARTPTS`;
                         aFilter += `,asetpts=PTS+${globalStart}/TB`;
                         if (fadeInTime > 0) aFilter += `,afade=t=in:st=${globalStart}:d=${fadeInTime}`;
                         if (fadeOutTime > 0) aFilter += `,afade=t=out:st=${fadeOutStartGlobal}:d=${fadeOutTime}`;
