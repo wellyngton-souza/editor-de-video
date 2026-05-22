@@ -184,6 +184,13 @@
                             <input type="number" id="p-volume" step="0.1" oninput="updateClip()">
                         </div>
                     </div>
+                    <div class="prop-group">
+                        <label>Fit Mode</label>
+                        <div style="display:flex; gap:6px;">
+                            <button id="btn-fit" class="btn btn-dark btn-small" style="flex:1; padding:6px 4px; font-size:11px;" onclick="setFitMode('fit')">⬜ Fit</button>
+                            <button id="btn-stretch" class="btn btn-dark btn-small" style="flex:1; padding:6px 4px; font-size:11px;" onclick="setFitMode('stretch')">⬛ Stretch</button>
+                        </div>
+                    </div>
                 </div>
 
                 <div id="text-props" style="display:none;">
@@ -371,35 +378,70 @@
             return tex;
         }
 
+        function computeGeometry(nativeW, nativeH, fitMode) {
+            if (fitMode === 'stretch') {
+                return new THREE.PlaneGeometry(PROJECT.w, PROJECT.h);
+            }
+            // 'fit': scale to fit inside canvas keeping native aspect ratio
+            const s = Math.min(PROJECT.w / nativeW, PROJECT.h / nativeH);
+            return new THREE.PlaneGeometry(nativeW * s, nativeH * s);
+        }
+
+        window.setFitMode = function(mode) {
+            if (state.selectedIdx === null) return;
+            const clip = state.clips[state.selectedIdx];
+            clip.fitMode = mode;
+            clip.mesh.geometry = computeGeometry(clip.nativeW, clip.nativeH, mode);
+            const btnFit = document.getElementById('btn-fit');
+            const btnStretch = document.getElementById('btn-stretch');
+            btnFit.style.background = mode === 'fit' ? 'var(--accent)' : '#333';
+            btnFit.style.color = mode === 'fit' ? '#000' : '#fff';
+            btnStretch.style.background = mode === 'stretch' ? 'var(--accent)' : '#333';
+            btnStretch.style.color = mode === 'stretch' ? '#000' : '#fff';
+            generateFFmpeg();
+        };
+
         window.handleFiles = function(files) {
             Array.from(files).forEach(file => {
                 const video = document.createElement('video');
                 video.src = URL.createObjectURL(file);
-                video.muted = false; 
+                video.muted = false;
                 video.loop = true;
                 video.crossOrigin = "anonymous";
 
                 const tex = new THREE.VideoTexture(video);
-                const mesh = new THREE.Mesh(
-                    new THREE.PlaneGeometry(PROJECT.w, PROJECT.h), 
-                    new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, transparent: true })
-                );
-                mesh.visible = false; 
-                scene.add(mesh);
-
-                state.clips.push({
-                    id: Date.now() + Math.random(), 
+                const clip = {
+                    id: Date.now() + Math.random(),
                     type: 'video',
-                    path: file.name, 
-                    timelineStart: state.time, 
-                    sourceStart: 0,   
-                    duration: 5, 
-                    scale: 1.0, 
+                    path: file.name,
+                    timelineStart: state.time,
+                    sourceStart: 0,
+                    duration: 5,
+                    scale: 1.0,
                     volume: 1.0,
                     fadeIn: 0,
                     fadeOut: 0,
-                    mesh, video, texture: tex
-                });
+                    fitMode: 'stretch',
+                    nativeW: PROJECT.w,
+                    nativeH: PROJECT.h,
+                    mesh: null, video, texture: tex
+                };
+
+                const mesh = new THREE.Mesh(
+                    computeGeometry(clip.nativeW, clip.nativeH, clip.fitMode),
+                    new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, transparent: true })
+                );
+                mesh.visible = false;
+                scene.add(mesh);
+                clip.mesh = mesh;
+
+                video.addEventListener('loadedmetadata', () => {
+                    clip.nativeW = video.videoWidth || PROJECT.w;
+                    clip.nativeH = video.videoHeight || PROJECT.h;
+                    clip.mesh.geometry = computeGeometry(clip.nativeW, clip.nativeH, clip.fitMode);
+                }, { once: true });
+
+                state.clips.push(clip);
             });
             updateLayering();
             syncUI();
@@ -409,26 +451,40 @@
         window.handleImages = function(files) {
             Array.from(files).forEach(file => {
                 const url = URL.createObjectURL(file);
-                const tex = new THREE.TextureLoader().load(url);
-                
-                const mesh = new THREE.Mesh(
-                    new THREE.PlaneGeometry(PROJECT.w, PROJECT.h), 
-                    new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, transparent: true })
-                );
-                mesh.visible = false; 
-                scene.add(mesh);
-
-                state.clips.push({
-                    id: Date.now() + Math.random(), 
+                const img = new Image();
+                const clip = {
+                    id: Date.now() + Math.random(),
                     type: 'image',
-                    path: file.name, 
-                    timelineStart: state.time, 
-                    duration: 5, 
-                    scale: 1.0, 
+                    path: file.name,
+                    timelineStart: state.time,
+                    duration: 5,
+                    scale: 1.0,
                     fadeIn: 0,
                     fadeOut: 0,
-                    mesh, texture: tex
-                });
+                    fitMode: 'stretch',
+                    nativeW: PROJECT.w,
+                    nativeH: PROJECT.h,
+                    mesh: null, texture: null
+                };
+
+                img.onload = () => {
+                    clip.nativeW = img.naturalWidth;
+                    clip.nativeH = img.naturalHeight;
+                    clip.mesh.geometry = computeGeometry(clip.nativeW, clip.nativeH, clip.fitMode);
+                };
+                img.src = url;
+
+                const tex = new THREE.TextureLoader().load(url);
+                const mesh = new THREE.Mesh(
+                    computeGeometry(clip.nativeW, clip.nativeH, clip.fitMode),
+                    new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, transparent: true })
+                );
+                mesh.visible = false;
+                scene.add(mesh);
+                clip.mesh = mesh;
+                clip.texture = tex;
+
+                state.clips.push(clip);
             });
             updateLayering();
             syncUI();
@@ -630,6 +686,16 @@
             document.getElementById('p-y').value = Math.round(clip.mesh.position.y);
             document.getElementById('p-fadein').value = clip.fadeIn;
             document.getElementById('p-fadeout').value = clip.fadeOut;
+            // Update fit mode buttons
+            if (clip.type === 'video' || clip.type === 'image') {
+                const mode = clip.fitMode || 'fit';
+                const btnFit = document.getElementById('btn-fit');
+                const btnStretch = document.getElementById('btn-stretch');
+                btnFit.style.background = mode === 'fit' ? 'var(--accent)' : '#333';
+                btnFit.style.color = mode === 'fit' ? '#000' : '#fff';
+                btnStretch.style.background = mode === 'stretch' ? 'var(--accent)' : '#333';
+                btnStretch.style.color = mode === 'stretch' ? '#000' : '#fff';
+            }
             syncUI();
         }
 
@@ -733,24 +799,32 @@
                     video.src = clip.video.src;
                     video.muted = false; video.loop = true;
                     const tex = new THREE.VideoTexture(video);
-                    newMesh = new THREE.Mesh(new THREE.PlaneGeometry(PROJECT.w, PROJECT.h), new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, transparent: true }));
+                    newMesh = new THREE.Mesh(computeGeometry(clip.nativeW, clip.nativeH, clip.fitMode), new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, transparent: true }));
                     newMesh.visible = false;
+                    newMesh.position.set(clip.mesh.position.x, clip.mesh.position.y, 0);
+                    newMesh.scale.set(clip.scale, clip.scale, 1);
                     scene.add(newMesh);
                     state.clips.push({
-                        id: Date.now() + Math.random(), type: 'video', path: clip.path, 
-                        timelineStart: splitTime, sourceStart: clip.sourceStart + offsetFromStart, 
+                        id: Date.now() + Math.random(), type: 'video', path: clip.path,
+                        timelineStart: splitTime, sourceStart: clip.sourceStart + offsetFromStart,
                         duration: newClipDuration, scale: clip.scale, volume: clip.volume,
-                        fadeIn: 0, fadeOut: clip.fadeOut, mesh: newMesh, video, texture: tex
+                        fadeIn: 0, fadeOut: clip.fadeOut,
+                        fitMode: clip.fitMode, nativeW: clip.nativeW, nativeH: clip.nativeH,
+                        mesh: newMesh, video, texture: tex
                     });
                 } else if (clip.type === 'image') {
-                    const tex = clip.texture; 
-                    newMesh = new THREE.Mesh(new THREE.PlaneGeometry(PROJECT.w, PROJECT.h), new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, transparent: true }));
+                    const tex = clip.texture;
+                    newMesh = new THREE.Mesh(computeGeometry(clip.nativeW, clip.nativeH, clip.fitMode), new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, transparent: true }));
                     newMesh.visible = false;
+                    newMesh.position.set(clip.mesh.position.x, clip.mesh.position.y, 0);
+                    newMesh.scale.set(clip.scale, clip.scale, 1);
                     scene.add(newMesh);
                     state.clips.push({
-                        id: Date.now() + Math.random(), type: 'image', path: clip.path, 
+                        id: Date.now() + Math.random(), type: 'image', path: clip.path,
                         timelineStart: splitTime, duration: newClipDuration, scale: clip.scale,
-                        fadeIn: 0, fadeOut: clip.fadeOut, mesh: newMesh, texture: tex
+                        fadeIn: 0, fadeOut: clip.fadeOut,
+                        fitMode: clip.fitMode, nativeW: clip.nativeW, nativeH: clip.nativeH,
+                        mesh: newMesh, texture: tex
                     });
                 } else {
                     const tex = createTextTexture(clip.text, clip.fontSize, clip.textColor);
@@ -895,13 +969,25 @@
                         vFilter = `setpts=PTS-STARTPTS,setpts=PTS+${globalStart}/TB`;
                     }
 
-                    let finalW = PROJECT.w * clip.scale;
-                    let finalH = PROJECT.h * clip.scale;
+                    const isFit = (clip.fitMode || 'fit') === 'fit';
+                    let finalW, finalH;
+                    if (isFit && clip.nativeW && clip.nativeH) {
+                        const s = Math.min(PROJECT.w / clip.nativeW, PROJECT.h / clip.nativeH) * clip.scale;
+                        finalW = clip.nativeW * s;
+                        finalH = clip.nativeH * s;
+                    } else {
+                        finalW = PROJECT.w * clip.scale;
+                        finalH = PROJECT.h * clip.scale;
+                    }
                     let overlayX = 0;
                     let overlayY = 0;
 
-                    if (clip.scale > 4) { 
-                        vFilter += `,scale=${PROJECT.w}:${PROJECT.h}`;
+                    if (clip.scale > 4) {
+                        if (isFit && clip.nativeW && clip.nativeH) {
+                            vFilter += `,scale=${PROJECT.w}:${PROJECT.h}:force_original_aspect_ratio=decrease,pad=${PROJECT.w}:${PROJECT.h}:(ow-iw)/2:(oh-ih)/2`;
+                        } else {
+                            vFilter += `,scale=${PROJECT.w}:${PROJECT.h}`;
+                        }
                         const cropW = Math.round(PROJECT.w / clip.scale);
                         const cropH = Math.round(PROJECT.h / clip.scale);
                         let cropX = Math.round((PROJECT.w / 2) - (clip.mesh.position.x / clip.scale) - (cropW / 2));
@@ -912,7 +998,11 @@
                         overlayX = 0;
                         overlayY = 0;
                     } else {
-                        vFilter += `,scale=${Math.round(finalW)}:${Math.round(finalH)}`;
+                        if (isFit && clip.nativeW && clip.nativeH) {
+                            vFilter += `,scale=${Math.round(finalW)}:${Math.round(finalH)}:force_original_aspect_ratio=decrease`;
+                        } else {
+                            vFilter += `,scale=${Math.round(finalW)}:${Math.round(finalH)}`;
+                        }
                         overlayX = Math.round(960 + clip.mesh.position.x - finalW / 2);
                         overlayY = Math.round(540 - clip.mesh.position.y - finalH / 2);
                     }
