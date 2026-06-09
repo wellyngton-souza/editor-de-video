@@ -6,7 +6,7 @@
     <style>
         :root { 
             --bg: #0a0a0a; --panel: #141414; --accent: #00ff88; --text: #efefef; 
-            --border: #2a2a2a; --sidebar-w: 340px; --timeline-h: 320px;
+            --border: #2a2a2a; --sidebar-w: 340px; --timeline-h: 220px;
             --danger: #ff4444;
         }
         body { 
@@ -50,7 +50,7 @@
         canvas { background: #000; display: block; cursor: default; }
         #timeline { 
             height: var(--timeline-h); background: var(--panel); 
-            border-top: 1px solid var(--border); padding: 20px; box-sizing: border-box;
+            border-top: 1px solid var(--border); padding: 10px 12px; box-sizing: border-box;
             display: flex; flex-direction: column;
         }
         #timeline-scroll-container { 
@@ -78,7 +78,7 @@
         }
         .ruler-tick.major { border-left: 1px solid #555; color: #bbb; }
         #tracks-area { 
-            position: relative; height: 180px; background: #0d0d0d; 
+            position: relative; height: 150px; background: #0d0d0d; 
             overflow-y: auto; 
             overflow-x: visible; 
             cursor: crosshair;
@@ -132,13 +132,17 @@
         }
         .copy-btn { width: auto; padding: 5px 15px; font-size: 11px; margin: 0; }
         .clip-block {
-            position: absolute; height: 34px; background: var(--accent);
+            position: absolute; height: 26px; background: var(--accent);
             color: #000; font-size: 11px; font-weight: bold; border-radius: 4px;
             cursor: grab; display: flex; align-items: center; padding: 0 10px;
             box-sizing: border-box; overflow: hidden; z-index: 10;
         }
         .clip-block.text-type { background: #00ccff; }
         .clip-block.image-type { background: #ffcc00; }
+        .clip-block.selected {
+            outline: 2px solid #fff;
+            outline-offset: -2px;
+        }
         .resizer {
             position: absolute; right: 0; top: 0; width: 12px; height: 100%;
             cursor: col-resize; background: rgba(0,0,0,0.2);
@@ -866,10 +870,41 @@
             }
         }
 
+        // Assign each clip a lane (row) using greedy interval packing.
+        // Clips that don't overlap in time share the same lane.
+        function assignLanes(clips) {
+            // laneEnd[lane] = the end time of the last clip placed in that lane
+            const laneEnd = [];
+            const lanes = new Array(clips.length).fill(0);
+            clips.forEach((clip, i) => {
+                const start = clip.timelineStart;
+                const end = start + clip.duration;
+                // Find the first lane whose last clip has already ended (with 0.05s gap tolerance)
+                let placed = false;
+                for (let l = 0; l < laneEnd.length; l++) {
+                    if (laneEnd[l] <= start + 0.05) {
+                        lanes[i] = l;
+                        laneEnd[l] = end;
+                        placed = true;
+                        break;
+                    }
+                }
+                if (!placed) {
+                    lanes[i] = laneEnd.length;
+                    laneEnd.push(end);
+                }
+            });
+            return lanes;
+        }
+
         function syncUI() {
             const list = document.getElementById('assets-list');
             list.innerHTML = '';
             trackArea.querySelectorAll('.clip-block').forEach(c => c.remove());
+
+            const lanes = assignLanes(state.clips);
+            const totalLanes = lanes.length > 0 ? Math.max(...lanes) + 1 : 1;
+
             state.clips.forEach((clip, i) => {
                 const item = document.createElement('div');
                 item.className = `asset-item ${state.selectedIdx === i ? 'active' : ''}`;
@@ -878,8 +913,9 @@
                 list.appendChild(item);
                 const block = document.createElement('div');
                 block.className = `clip-block ${clip.type === 'text' ? 'text-type' : (clip.type === 'image' ? 'image-type' : '')}`;
+                if (state.selectedIdx === i) block.classList.add('selected');
                 block.dataset.id = clip.id;
-                block.style.top = `${i * 45 + 10}px`;
+                block.style.top = `${lanes[i] * 32 + 4}px`;
                 block.style.left = `${clip.timelineStart * PROJECT.pxPerSec}px`;
                 block.style.width = `${clip.duration * PROJECT.pxPerSec}px`;
                 block.innerText = clip.type === 'video' ? clip.path : (clip.type === 'image' ? clip.path : clip.text);
@@ -890,7 +926,7 @@
                 trackArea.appendChild(block);
             });
             renderRuler();
-            document.getElementById('playhead').style.height = `${state.clips.length * 45 + 100}px`;
+            document.getElementById('playhead').style.height = `${totalLanes * 32 + 20}px`;
         }
 
         function syncVideos() {
