@@ -6,7 +6,7 @@
     <style>
         :root { 
             --bg: #0a0a0a; --panel: #141414; --accent: #00ff88; --text: #efefef; 
-            --border: #2a2a2a; --sidebar-w: 340px; --timeline-h: 220px;
+            --border: #2a2a2a; --sidebar-w: 340px; --timeline-h: 280px;
             --danger: #ff4444;
         }
         body { 
@@ -78,7 +78,7 @@
         }
         .ruler-tick.major { border-left: 1px solid #555; color: #bbb; }
         #tracks-area { 
-            position: relative; height: 150px; background: #0d0d0d; 
+            position: relative; height: 200px; background: #0d0d0d; 
             overflow-y: auto; 
             overflow-x: visible; 
             cursor: crosshair;
@@ -139,6 +139,7 @@
         }
         .clip-block.text-type { background: #00ccff; }
         .clip-block.image-type { background: #ffcc00; }
+        .clip-block.audio-type { background: #cc44ff; color: #fff; }
         .clip-block.selected {
             outline: 2px solid #fff;
             outline-offset: -2px;
@@ -155,9 +156,11 @@
         <div class="section-title">Media Assets</div>
         <input type="file" id="file-input" multiple accept="video/*" style="display:none" onchange="handleFiles(this.files); this.value=''">
         <input type="file" id="image-input" multiple accept="image/*" style="display:none" onchange="handleImages(this.files); this.value=''">
+        <input type="file" id="audio-input" multiple accept="audio/*" style="display:none" onchange="handleAudios(this.files); this.value=''">
         
         <button class="btn" onclick="document.getElementById('file-input').click()">+ Import Video</button>
         <button class="btn" onclick="document.getElementById('image-input').click()">+ Import Image</button>
+        <button class="btn" style="background:#cc44ff; color:#fff;" onclick="document.getElementById('audio-input').click()">+ Import MP3 / Audio</button>
         <button class="btn btn-dark" onclick="addTextClip()">+ Add Text Overlay</button>
         
         <div style="display: flex; gap: 8px; margin-bottom: 20px;">
@@ -193,6 +196,33 @@
                         <div style="display:flex; gap:6px;">
                             <button id="btn-fit" class="btn btn-dark btn-small" style="flex:1; padding:6px 4px; font-size:11px;" onclick="setFitMode('fit')">⬜ Fit</button>
                             <button id="btn-stretch" class="btn btn-dark btn-small" style="flex:1; padding:6px 4px; font-size:11px;" onclick="setFitMode('stretch')">⬛ Stretch</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="audio-props" style="display:none;">
+                    <div class="prop-group">
+                        <label>File Path</label>
+                        <input type="text" id="p-audio-path" oninput="updateClip()">
+                    </div>
+                    <div class="prop-row">
+                        <div class="prop-group">
+                            <label>Volume (0-2)</label>
+                            <input type="number" id="p-audio-volume" step="0.1" min="0" max="2" oninput="updateClip()">
+                        </div>
+                        <div class="prop-group">
+                            <label>Start in Source (s)</label>
+                            <input type="number" id="p-audio-srcstart" step="0.1" min="0" oninput="updateClip()">
+                        </div>
+                    </div>
+                    <div class="prop-row">
+                        <div class="prop-group">
+                            <label>Fade In (s)</label>
+                            <input type="number" id="p-audio-fadein" step="0.1" min="0" oninput="updateClip()">
+                        </div>
+                        <div class="prop-group">
+                            <label>Fade Out (s)</label>
+                            <input type="number" id="p-audio-fadeout" step="0.1" min="0" oninput="updateClip()">
                         </div>
                     </div>
                 </div>
@@ -293,10 +323,26 @@
             if (e.key.toLowerCase() === 's') {
                 window.splitClip();
             }
+
+            if (e.key === 'Delete' || e.key === 'Backspace') {
+                window.deleteClip();
+            }
+
+            // Ctrl+C — copy selected clip
+            if (e.key.toLowerCase() === 'c' && (e.ctrlKey || e.metaKey)) {
+                window.copyClip();
+            }
+
+            // Ctrl+V — paste clipboard clip at current playhead position
+            if (e.key.toLowerCase() === 'v' && (e.ctrlKey || e.metaKey)) {
+                e.preventDefault();
+                window.pasteClip();
+            }
         });
 
         const PROJECT = { w: 1920, h: 1080, aspect: 16/9, pxPerSec: 20 };
         let state = { clips: [], selectedIdx: null, isPlaying: false, time: 0 };
+        let clipboard = null; // stores a deep copy of the last copied clip
 
         const scene = new THREE.Scene();
         const camera = new THREE.OrthographicCamera(-PROJECT.w/2, PROJECT.w/2, PROJECT.h/2, -PROJECT.h/2, 0.1, 1000);
@@ -495,6 +541,40 @@
             generateFFmpeg();
         };
 
+        window.handleAudios = function(files) {
+            Array.from(files).forEach(file => {
+                const url = URL.createObjectURL(file);
+                const audio = document.createElement('audio');
+                audio.src = url;
+                audio.preload = 'metadata';
+
+                const clip = {
+                    id: Date.now() + Math.random(),
+                    type: 'audio',
+                    path: file.name,
+                    timelineStart: state.time,
+                    duration: 10,
+                    sourceStart: 0,
+                    volume: 1.0,
+                    fadeIn: 0,
+                    fadeOut: 0,
+                    audio,
+                    // Audio clips need a dummy mesh (invisible) just to satisfy the lane system
+                    mesh: { position: { x: 0, y: 0, z: 0 }, visible: false, scale: { set: () => {} } }
+                };
+
+                audio.addEventListener('loadedmetadata', () => {
+                    clip.duration = audio.duration;
+                    syncUI();
+                    generateFFmpeg();
+                }, { once: true });
+
+                state.clips.push(clip);
+            });
+            syncUI();
+            generateFFmpeg();
+        };
+
         window.addTextClip = function() {
             const text = "Novo Texto";
             const size = 60;
@@ -664,7 +744,9 @@
             document.getElementById('props-panel').style.display = 'block';
             
             const isMedia = clip.type === 'video' || clip.type === 'image';
+            const isAudio = clip.type === 'audio';
             document.getElementById('media-props').style.display = isMedia ? 'block' : 'none';
+            document.getElementById('audio-props').style.display = isAudio ? 'block' : 'none';
             document.getElementById('text-props').style.display = clip.type === 'text' ? 'block' : 'none';
             document.getElementById('fade-props').style.display = isMedia ? 'flex' : 'none';
 
@@ -679,6 +761,12 @@
                     document.getElementById('p-srcstart').value = clip.sourceStart;
                     document.getElementById('p-volume').value = clip.volume;
                 }
+            } else if (isAudio) {
+                document.getElementById('p-audio-path').value = clip.path;
+                document.getElementById('p-audio-volume').value = clip.volume;
+                document.getElementById('p-audio-srcstart').value = clip.sourceStart;
+                document.getElementById('p-audio-fadein').value = clip.fadeIn;
+                document.getElementById('p-audio-fadeout').value = clip.fadeOut;
             } else {
                 document.getElementById('p-text-content').value = clip.text;
                 document.getElementById('p-text-font').value = clip.fontPath;
@@ -686,10 +774,12 @@
                 document.getElementById('p-text-color').value = clip.textColor;
             }
             document.getElementById('p-duration').value = clip.duration; 
-            document.getElementById('p-x').value = Math.round(clip.mesh.position.x);
-            document.getElementById('p-y').value = Math.round(clip.mesh.position.y);
-            document.getElementById('p-fadein').value = clip.fadeIn;
-            document.getElementById('p-fadeout').value = clip.fadeOut;
+            if (clip.type !== 'audio') {
+                document.getElementById('p-x').value = Math.round(clip.mesh.position.x);
+                document.getElementById('p-y').value = Math.round(clip.mesh.position.y);
+            }
+            document.getElementById('p-fadein').value = clip.fadeIn || 0;
+            document.getElementById('p-fadeout').value = clip.fadeOut || 0;
             // Update fit mode buttons
             if (clip.type === 'video' || clip.type === 'image') {
                 const mode = clip.fitMode || 'fit';
@@ -707,7 +797,6 @@
             if (state.selectedIdx === null) return;
             const clip = state.clips[state.selectedIdx];
             
-            // Função auxiliar para atualizar apenas se o input tiver valor
             const updateIfValid = (id, prop, isInt = false) => {
                 const val = document.getElementById(id).value;
                 if (val !== "") {
@@ -717,43 +806,46 @@
                 return false;
             };
 
-            // Atualiza propriedades básicas apenas se houver valor no input
             updateIfValid('p-duration', 'duration');
-            updateIfValid('p-fadein', 'fadeIn');
-            updateIfValid('p-fadeout', 'fadeOut');
-            updateIfValid('p-x', 'meshPositionX'); // Especial para posição
-            updateIfValid('p-y', 'meshPositionY');
 
-            // Aplica posições ao mesh
-            clip.mesh.position.x = parseFloat(document.getElementById('p-x').value);
-            clip.mesh.position.y = parseFloat(document.getElementById('p-y').value);
-
-            if(clip.type === 'video' || clip.type === 'image') {
-                clip.path = document.getElementById('p-path').value;
-                const scaleVal = document.getElementById('p-scale').value;
-                if (scaleVal !== "") {
-                    clip.scale = parseFloat(scaleVal);
-                    clip.mesh.scale.set(clip.scale, clip.scale, 1);
-                }
-                if(clip.type === 'video') {
-                    updateIfValid('p-srcstart', 'sourceStart');
-                    updateIfValid('p-volume', 'volume');
-                    clip.video.volume = Math.min(1, clip.volume);
-                }
+            if (clip.type === 'audio') {
+                clip.path = document.getElementById('p-audio-path').value;
+                updateIfValid('p-audio-volume', 'volume');
+                updateIfValid('p-audio-srcstart', 'sourceStart');
+                updateIfValid('p-audio-fadein', 'fadeIn');
+                updateIfValid('p-audio-fadeout', 'fadeOut');
+                clip.audio.volume = Math.min(1, clip.volume);
             } else {
-                // Para texto, atualizamos o conteúdo e recriamos a textura
-                clip.text = document.getElementById('p-text-content').value;
-                clip.fontPath = document.getElementById('p-text-font').value;
-                
-                const sizeVal = document.getElementById('p-text-size').value;
-                if (sizeVal !== "") clip.fontSize = parseInt(sizeVal);
-                
-                clip.textColor = document.getElementById('p-text-color').value;
-                
-                const newTex = createTextTexture(clip.text, clip.fontSize, clip.textColor);
-                clip.texture = newTex;
-                clip.mesh.material.map = newTex;
-                clip.mesh.geometry = new THREE.PlaneGeometry(newTex.image.width, newTex.image.height);
+                updateIfValid('p-fadein', 'fadeIn');
+                updateIfValid('p-fadeout', 'fadeOut');
+                updateIfValid('p-x', 'meshPositionX');
+                updateIfValid('p-y', 'meshPositionY');
+                clip.mesh.position.x = parseFloat(document.getElementById('p-x').value);
+                clip.mesh.position.y = parseFloat(document.getElementById('p-y').value);
+
+                if(clip.type === 'video' || clip.type === 'image') {
+                    clip.path = document.getElementById('p-path').value;
+                    const scaleVal = document.getElementById('p-scale').value;
+                    if (scaleVal !== "") {
+                        clip.scale = parseFloat(scaleVal);
+                        clip.mesh.scale.set(clip.scale, clip.scale, 1);
+                    }
+                    if(clip.type === 'video') {
+                        updateIfValid('p-srcstart', 'sourceStart');
+                        updateIfValid('p-volume', 'volume');
+                        clip.video.volume = Math.min(1, clip.volume);
+                    }
+                } else {
+                    clip.text = document.getElementById('p-text-content').value;
+                    clip.fontPath = document.getElementById('p-text-font').value;
+                    const sizeVal = document.getElementById('p-text-size').value;
+                    if (sizeVal !== "") clip.fontSize = parseInt(sizeVal);
+                    clip.textColor = document.getElementById('p-text-color').value;
+                    const newTex = createTextTexture(clip.text, clip.fontSize, clip.textColor);
+                    clip.texture = newTex;
+                    clip.mesh.material.map = newTex;
+                    clip.mesh.geometry = new THREE.PlaneGeometry(newTex.image.width, newTex.image.height);
+                }
             }
             
             syncUI(); 
@@ -778,7 +870,8 @@
         window.deleteClip = function() {
             if (state.selectedIdx === null) return;
             const clip = state.clips[state.selectedIdx];
-            scene.remove(clip.mesh);
+            if (clip.type !== 'audio') scene.remove(clip.mesh);
+            else if (clip.audio) clip.audio.pause();
             state.clips.splice(state.selectedIdx, 1);
             state.selectedIdx = null;
             document.getElementById('props-panel').style.display = 'none';
@@ -830,6 +923,19 @@
                         fitMode: clip.fitMode, nativeW: clip.nativeW, nativeH: clip.nativeH,
                         mesh: newMesh, texture: tex
                     });
+                } else if (clip.type === 'audio') {
+                    const newAudio = document.createElement('audio');
+                    newAudio.src = clip.audio.src;
+                    state.clips.push({
+                        id: Date.now() + Math.random(), type: 'audio', path: clip.path,
+                        timelineStart: splitTime,
+                        sourceStart: clip.sourceStart + offsetFromStart,
+                        duration: newClipDuration,
+                        volume: clip.volume,
+                        fadeIn: 0, fadeOut: clip.fadeOut,
+                        audio: newAudio,
+                        mesh: { position: { x: 0, y: 0, z: 0 }, visible: false, scale: { set: () => {} } }
+                    });
                 } else {
                     const tex = createTextTexture(clip.text, clip.fontSize, clip.textColor);
                     newMesh = new THREE.Mesh(new THREE.PlaneGeometry(tex.image.width, tex.image.height), new THREE.MeshBasicMaterial({ map: tex, transparent: true, side: THREE.DoubleSide }));
@@ -849,6 +955,126 @@
                 syncUI();
                 generateFFmpeg();
             }
+        };
+
+        window.copyClip = function() {
+            if (state.selectedIdx === null) return;
+            const src = state.clips[state.selectedIdx];
+            // Deep-copy all plain properties; media elements are referenced by src URL
+            clipboard = {
+                type: src.type,
+                path: src.path,
+                duration: src.duration,
+                timelineStart: src.timelineStart,
+                sourceStart: src.sourceStart || 0,
+                scale: src.scale,
+                volume: src.volume,
+                fadeIn: src.fadeIn || 0,
+                fadeOut: src.fadeOut || 0,
+                fitMode: src.fitMode,
+                nativeW: src.nativeW,
+                nativeH: src.nativeH,
+                // video src url
+                videoSrc: src.type === 'video' ? src.video.src : null,
+                // audio src url
+                audioSrc: src.type === 'audio' ? src.audio.src : null,
+                // image texture reference
+                texture: src.type === 'image' ? src.texture : null,
+                // mesh position
+                posX: src.mesh.position.x,
+                posY: src.mesh.position.y,
+                // text props
+                text: src.text,
+                fontSize: src.fontSize,
+                textColor: src.textColor,
+                fontPath: src.fontPath,
+            };
+            // Flash the selected clip block to give visual feedback
+            const blocks = document.querySelectorAll('.clip-block.selected');
+            blocks.forEach(b => {
+                b.style.outline = '2px solid #fff';
+                b.style.opacity = '0.6';
+                setTimeout(() => { b.style.opacity = '1'; }, 200);
+            });
+        };
+
+        window.pasteClip = function() {
+            if (!clipboard) return;
+            const c = clipboard;
+            // Paste at current playhead; offset slightly if same position as original
+            const pasteStart = state.time !== c.timelineStart ? state.time : c.timelineStart + 0.5;
+
+            if (c.type === 'video') {
+                const video = document.createElement('video');
+                video.src = c.videoSrc;
+                video.muted = false; video.loop = true;
+                const tex = new THREE.VideoTexture(video);
+                const mesh = new THREE.Mesh(
+                    computeGeometry(c.nativeW, c.nativeH, c.fitMode),
+                    new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, transparent: true })
+                );
+                mesh.visible = false;
+                mesh.position.set(c.posX, c.posY, 0);
+                mesh.scale.set(c.scale, c.scale, 1);
+                scene.add(mesh);
+                state.clips.push({
+                    id: Date.now() + Math.random(), type: 'video', path: c.path,
+                    timelineStart: pasteStart, sourceStart: c.sourceStart,
+                    duration: c.duration, scale: c.scale, volume: c.volume,
+                    fadeIn: c.fadeIn, fadeOut: c.fadeOut,
+                    fitMode: c.fitMode, nativeW: c.nativeW, nativeH: c.nativeH,
+                    mesh, video, texture: tex
+                });
+            } else if (c.type === 'image') {
+                const mesh = new THREE.Mesh(
+                    computeGeometry(c.nativeW, c.nativeH, c.fitMode),
+                    new THREE.MeshBasicMaterial({ map: c.texture, side: THREE.DoubleSide, transparent: true })
+                );
+                mesh.visible = false;
+                mesh.position.set(c.posX, c.posY, 0);
+                mesh.scale.set(c.scale, c.scale, 1);
+                scene.add(mesh);
+                state.clips.push({
+                    id: Date.now() + Math.random(), type: 'image', path: c.path,
+                    timelineStart: pasteStart, duration: c.duration, scale: c.scale,
+                    fadeIn: c.fadeIn, fadeOut: c.fadeOut,
+                    fitMode: c.fitMode, nativeW: c.nativeW, nativeH: c.nativeH,
+                    mesh, texture: c.texture
+                });
+            } else if (c.type === 'audio') {
+                const audio = document.createElement('audio');
+                audio.src = c.audioSrc;
+                state.clips.push({
+                    id: Date.now() + Math.random(), type: 'audio', path: c.path,
+                    timelineStart: pasteStart, sourceStart: c.sourceStart,
+                    duration: c.duration, volume: c.volume,
+                    fadeIn: c.fadeIn, fadeOut: c.fadeOut,
+                    audio,
+                    mesh: { position: { x: 0, y: 0, z: 0 }, visible: false, scale: { set: () => {} } }
+                });
+            } else if (c.type === 'text') {
+                const tex = createTextTexture(c.text, c.fontSize, c.textColor);
+                const mesh = new THREE.Mesh(
+                    new THREE.PlaneGeometry(tex.image.width, tex.image.height),
+                    new THREE.MeshBasicMaterial({ map: tex, transparent: true, side: THREE.DoubleSide })
+                );
+                mesh.visible = false;
+                mesh.position.set(c.posX, c.posY, 0);
+                scene.add(mesh);
+                state.clips.push({
+                    id: Date.now() + Math.random(), type: 'text',
+                    text: c.text, fontSize: c.fontSize, textColor: c.textColor, fontPath: c.fontPath,
+                    timelineStart: pasteStart, duration: c.duration,
+                    fadeIn: c.fadeIn, fadeOut: c.fadeOut,
+                    mesh, texture: tex
+                });
+            }
+
+            const newIndex = state.clips.length - 1;
+            updateLayering();
+            syncUI();
+            selectClip(newIndex);
+            generateFFmpeg();
         };
 
         function renderRuler() {
@@ -908,17 +1134,17 @@
             state.clips.forEach((clip, i) => {
                 const item = document.createElement('div');
                 item.className = `asset-item ${state.selectedIdx === i ? 'active' : ''}`;
-                item.innerText = clip.type === 'video' ? `[Vid] ${clip.path}` : (clip.type === 'image' ? `[Img] ${clip.path}` : `[Txt] ${clip.text}`);
+                item.innerText = clip.type === 'video' ? `[Vid] ${clip.path}` : (clip.type === 'image' ? `[Img] ${clip.path}` : (clip.type === 'audio' ? `[Aud] ${clip.path}` : `[Txt] ${clip.text}`));
                 item.onclick = () => selectClip(i);
                 list.appendChild(item);
                 const block = document.createElement('div');
-                block.className = `clip-block ${clip.type === 'text' ? 'text-type' : (clip.type === 'image' ? 'image-type' : '')}`;
+                block.className = `clip-block ${clip.type === 'text' ? 'text-type' : (clip.type === 'image' ? 'image-type' : (clip.type === 'audio' ? 'audio-type' : ''))}`;
                 if (state.selectedIdx === i) block.classList.add('selected');
                 block.dataset.id = clip.id;
                 block.style.top = `${lanes[i] * 32 + 4}px`;
                 block.style.left = `${clip.timelineStart * PROJECT.pxPerSec}px`;
                 block.style.width = `${clip.duration * PROJECT.pxPerSec}px`;
-                block.innerText = clip.type === 'video' ? clip.path : (clip.type === 'image' ? clip.path : clip.text);
+                block.innerText = clip.type === 'audio' ? `🎵 ${clip.path}` : (clip.type === 'video' ? clip.path : (clip.type === 'image' ? clip.path : clip.text));
                 const res = document.createElement('div');
                 res.className = 'resizer';
                 res.dataset.id = clip.id;
@@ -932,16 +1158,22 @@
         function syncVideos() {
             state.clips.forEach(clip => {
                 const active = state.time >= clip.timelineStart && state.time <= (clip.timelineStart + clip.duration);
-                clip.mesh.visible = active;
+                if (clip.type !== 'audio') clip.mesh.visible = active;
                 if (active) {
                     if(clip.type === 'video') {
                         clip.video.currentTime = (state.time - clip.timelineStart) + clip.sourceStart;
                         clip.video.volume = Math.min(1, clip.volume);
                         if (!state.isPlaying) clip.video.pause();
                     }
-                    clip.mesh.material.opacity = calculateOpacity(clip); 
+                    if(clip.type === 'audio') {
+                        clip.audio.currentTime = (state.time - clip.timelineStart) + clip.sourceStart;
+                        clip.audio.volume = Math.min(1, clip.volume);
+                        if (!state.isPlaying) clip.audio.pause();
+                    }
+                    if (clip.type !== 'audio') clip.mesh.material.opacity = calculateOpacity(clip); 
                 } else {
                     if(clip.type === 'video') clip.video.pause();
+                    if(clip.type === 'audio') clip.audio.pause();
                 }
             });
         }
@@ -956,6 +1188,17 @@
                 if(c.type === 'video') {
                     const active = state.time >= c.timelineStart && state.time <= (c.timelineStart + c.duration);
                     if (active) state.isPlaying ? c.video.play() : c.video.pause();
+                }
+                if(c.type === 'audio') {
+                    const active = state.time >= c.timelineStart && state.time <= (c.timelineStart + c.duration);
+                    if (active) {
+                        if (state.isPlaying) {
+                            c.audio.currentTime = (state.time - c.timelineStart) + c.sourceStart;
+                            c.audio.play();
+                        } else {
+                            c.audio.pause();
+                        }
+                    }
                 }
             });
         }
@@ -976,6 +1219,10 @@
                     clip.inputIndex = inputCounter++; 
                     const ssFlag = (clip.type === 'video' && clip.sourceStart > 0) ? `-ss ${clip.sourceStart} ` : ``;
                     inputs += (clip.type === 'image' ? `-loop 1 ` : ``) + `${ssFlag}-i "${clip.path}" `;
+                } else if (clip.type === 'audio') {
+                    clip.inputIndex = inputCounter++;
+                    const ssFlag = clip.sourceStart > 0 ? `-ss ${clip.sourceStart} ` : ``;
+                    inputs += `${ssFlag}-i "${clip.path}" `;
                 } else {
                     clip.inputIndex = null; 
                 }
@@ -984,6 +1231,7 @@
 
             const layerClipped = state.clips; 
             let vChains = [], aChains = [], ovlChain = "";
+            let ovlCounter = 0; // tracks how many overlay steps have been added
 
             layerClipped.forEach((clip, i) => {
                 const globalStart = clip.timelineStart;
@@ -998,7 +1246,6 @@
 
                     let vFilter = "";
                     if (clip.type === 'video') {
-                        // -ss já foi aplicado no input, então trim começa do 0
                         vFilter = `trim=start=0:duration=${duration},setpts=PTS-STARTPTS`;
                         vFilter += `,setpts=PTS+${globalStart}/TB`;
                     } else {
@@ -1047,27 +1294,40 @@
                     if (fadeOutTime > 0) vFilter += `,fade=t=out:st=${fadeOutStartGlobal}:d=${fadeOutTime}`;
                     vChains.push(`${vIn}${vFilter}${vP}`);
 
+                    const prev = ovlCounter === 0 ? `[bg]` : `[ovl${ovlCounter-1}]`;
+                    const next = `[ovl${ovlCounter}]`;
+                    ovlChain += `${prev}[v${i}]overlay=${overlayX}:${overlayY}:enable='between(t,${globalStart},${globalEnd})'${next},`;
+                    ovlCounter++;
+
                     if (clip.type === 'video') {
                         const aIn = `[${clip.inputIndex}:a]`;
                         const aP = `[a${audioCounter}]`;
                         const delayMs = Math.round(clip.timelineStart * 1000);
-                        // -ss já foi aplicado no input, então atrim começa do 0
                         let aFilter = `atrim=start=0:duration=${duration},asetpts=PTS-STARTPTS`;
                         aFilter += `,asetpts=PTS+${globalStart}/TB`;
                         if (fadeInTime > 0) aFilter += `,afade=t=in:st=${globalStart}:d=${fadeInTime}`;
                         if (fadeOutTime > 0) aFilter += `,afade=t=out:st=${fadeOutStartGlobal}:d=${fadeOutTime}`;
-                        // Importante: aresample garante que a frequência seja a mesma para o amix
                         aFilter += `,volume=${clip.volume},adelay=${delayMs}|${delayMs},aresample=44100`;
                         aChains.push(`${aIn}${aFilter}${aP}`);
                         audioCounter++;
                     }
-
-                    const prev = i === 0 ? `[bg]` : `[ovl${i-1}]`;
-                    const next = `[ovl${i}]`;
-                    ovlChain += `${prev}[v${i}]overlay=${overlayX}:${overlayY}:enable='between(t,${globalStart},${globalEnd})'${next},`;
+                } else if (clip.type === 'audio') {
+                    // Standalone audio clip — only audio chain, no overlay
+                    const aIn = `[${clip.inputIndex}:a]`;
+                    const aP = `[a${audioCounter}]`;
+                    const delayMs = Math.round(clip.timelineStart * 1000);
+                    const fadeInTime = Math.min(clip.fadeIn || 0, clip.duration);
+                    const fadeOutTime = Math.min(clip.fadeOut || 0, clip.duration);
+                    const fadeOutStartGlobal = globalEnd - fadeOutTime;
+                    let aFilter = `atrim=start=0:duration=${clip.duration},asetpts=PTS-STARTPTS`;
+                    aFilter += `,asetpts=PTS+${globalStart}/TB`;
+                    if (fadeInTime > 0) aFilter += `,afade=t=in:st=${globalStart}:d=${fadeInTime}`;
+                    if (fadeOutTime > 0) aFilter += `,afade=t=out:st=${fadeOutStartGlobal}:d=${fadeOutTime}`;
+                    aFilter += `,volume=${clip.volume},adelay=${delayMs}|${delayMs},aresample=44100`;
+                    aChains.push(`${aIn}${aFilter}${aP}`);
+                    audioCounter++;
                 } else {
-                    const prev = i === 0 ? `[bg]` : `[ovl${i-1}]`;
-                    const next = `[ovl${i}]`;
+                    // text clip
                     const texW = clip.texture.image.width;
                     const isCenterX = clip.mesh.position.x === 0;
                     const posX = isCenterX ? '(w-tw)/2' : Math.round(960 + clip.mesh.position.x - (texW / 2));
@@ -1078,14 +1338,17 @@
                         const alphaExpr = `if(lt(t,${globalStart}+${clip.fadeIn}),(t-${globalStart})/${clip.fadeIn},if(lt(t,${globalEnd}-${clip.fadeOut}),1,(${globalEnd}-t)/${clip.fadeOut}))`;
                         finalColor = `${clip.textColor}@${alphaExpr}`;
                     }
+                    const prev = ovlCounter === 0 ? `[bg]` : `[ovl${ovlCounter-1}]`;
+                    const next = `[ovl${ovlCounter}]`;
                     ovlChain += `${prev}drawtext=text='${clip.text}':fontfile='${clip.fontPath}':x=${posX}:y=${posY}:fontsize=${clip.fontSize}:fontcolor=${finalColor}:borderw=3:bordercolor=black:enable='between(t,${globalStart},${globalEnd})'${next},`;
+                    ovlCounter++;
                 }
             });
 
             if (ovlChain.endsWith(',')) ovlChain = ovlChain.slice(0, -1);
             const bg = `color=c=black:s=1920x1080:d=${totalT}[bg]`;
             const finalVString = `${bg};${vChains.join(',')};${ovlChain}`;
-            const vOut = `[ovl${layerClipped.length - 1}]`;
+            const vOut = ovlCounter > 0 ? `[ovl${ovlCounter - 1}]` : `[bg]`;
             
             // --- CORREÇÃO DO ÁUDIO ---
             // Criamos um fluxo de silêncio absoluto que dura todo o projeto
@@ -1119,10 +1382,14 @@
             requestAnimationFrame(animate);
             if (state.selectedIdx !== null) {
                 const clip = state.clips[state.selectedIdx];
-                handleMesh.visible = true;
-                handleMesh.position.x = clip.mesh.position.x + (PROJECT.w / 2 * clip.scale);
-                handleMesh.position.y = clip.mesh.position.y - (PROJECT.h / 2 * clip.scale);
-                handleMesh.position.z = clip.mesh.position.z + 0.1;
+                if (clip.type !== 'audio' && clip.scale !== undefined) {
+                    handleMesh.visible = true;
+                    handleMesh.position.x = clip.mesh.position.x + (PROJECT.w / 2 * clip.scale);
+                    handleMesh.position.y = clip.mesh.position.y - (PROJECT.h / 2 * clip.scale);
+                    handleMesh.position.z = clip.mesh.position.z + 0.1;
+                } else {
+                    handleMesh.visible = false;
+                }
             } else {
                 handleMesh.visible = false;
             }
@@ -1139,21 +1406,33 @@
                             c.video.currentTime = c.sourceStart; 
                             c.video.pause();
                         }
+                        if(c.type === 'audio') {
+                            c.audio.currentTime = c.sourceStart;
+                            c.audio.pause();
+                        }
                     });
                 } else {
                     state.clips.forEach(clip => {
                         const active = state.time >= clip.timelineStart && state.time <= (clip.timelineStart + clip.duration);
-                        clip.mesh.visible = active;
+                        if (clip.type !== 'audio') clip.mesh.visible = active;
                         if (active) {
-                            clip.mesh.material.opacity = calculateOpacity(clip);
+                            if (clip.type !== 'audio') clip.mesh.material.opacity = calculateOpacity(clip);
                             if(clip.type === 'video') {
                                 if (clip.video.paused) {
                                     clip.video.currentTime = (state.time - clip.timelineStart) + clip.sourceStart;
                                     clip.video.play();
                                 }
                             }
+                            if(clip.type === 'audio') {
+                                if (clip.audio.paused) {
+                                    clip.audio.currentTime = (state.time - clip.timelineStart) + clip.sourceStart;
+                                    clip.audio.volume = Math.min(1, clip.volume);
+                                    clip.audio.play();
+                                }
+                            }
                         } else {
                             if(clip.type === 'video') clip.video.pause();
+                            if(clip.type === 'audio') clip.audio.pause();
                         }
                     });
                 }
