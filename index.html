@@ -113,11 +113,15 @@
         
         .prop-group { margin-bottom: 12px; }
         label { display: block; font-size: 11px; color: #888; margin-bottom: 4px; }
-        input { 
+        input, select { 
             width: 100%; background: #000; border: 1px solid var(--border); 
             color: #fff; padding: 6px; box-sizing: border-box; border-radius: 4px; 
             font-size: 12px;
         }
+        select { cursor: pointer; }
+        .checkbox-row { display: flex; align-items: center; gap: 8px; cursor: pointer; margin-bottom: 8px; }
+        .checkbox-row input[type="checkbox"] { width: auto; margin: 0; accent-color: var(--accent); cursor: pointer; }
+        .checkbox-row span { font-size: 12px; color: var(--text); }
         .prop-row { display: flex; gap: 10px; }
         
         #prompt-box {
@@ -191,12 +195,57 @@
                             <input type="number" id="p-volume" step="0.1" oninput="updateClip()">
                         </div>
                     </div>
+                    <div class="prop-group" id="normalize-group">
+                        <label class="checkbox-row">
+                            <input type="checkbox" id="p-normalize" onchange="updateClip()">
+                            <span>Normalize Audio (Loudness)</span>
+                        </label>
+                        <label>Target LUFS</label>
+                        <select id="p-normalize-lufs" onchange="updateClip()">
+                            <option value="-14">-14 LUFS (Streaming: YouTube/Spotify)</option>
+                            <option value="-16">-16 LUFS (Podcast)</option>
+                            <option value="-18">-18 LUFS</option>
+                            <option value="-23">-23 LUFS (Broadcast EBU R128)</option>
+                        </select>
+                    </div>
                     <div class="prop-group">
                         <label>Fit Mode</label>
                         <div style="display:flex; gap:6px;">
                             <button id="btn-fit" class="btn btn-dark btn-small" style="flex:1; padding:6px 4px; font-size:11px;" onclick="setFitMode('fit')">⬜ Fit</button>
                             <button id="btn-stretch" class="btn btn-dark btn-small" style="flex:1; padding:6px 4px; font-size:11px;" onclick="setFitMode('stretch')">⬛ Stretch</button>
                         </div>
+                    </div>
+                    <div class="prop-group">
+                        <label>Rotate (°)</label>
+                        <div style="display:flex; gap:6px; align-items:center;">
+                            <input type="number" id="p-rotate" step="1" min="-360" max="360" oninput="updateClip()" style="flex:1;">
+                            <button class="btn btn-dark btn-small" onclick="rotateClipBy(-90)" title="−90°">↺ −90</button>
+                            <button class="btn btn-dark btn-small" onclick="rotateClipBy(90)" title="+90°">↻ +90</button>
+                        </div>
+                    </div>
+                    <div class="prop-group" id="crop-group">
+                        <label>Crop (px, relative to native size)</label>
+                        <div class="prop-row">
+                            <div class="prop-group">
+                                <label>Crop X</label>
+                                <input type="number" id="p-crop-x" step="1" min="0" oninput="updateClip()">
+                            </div>
+                            <div class="prop-group">
+                                <label>Crop Y</label>
+                                <input type="number" id="p-crop-y" step="1" min="0" oninput="updateClip()">
+                            </div>
+                        </div>
+                        <div class="prop-row">
+                            <div class="prop-group">
+                                <label>Crop W</label>
+                                <input type="number" id="p-crop-w" step="1" min="1" oninput="updateClip()">
+                            </div>
+                            <div class="prop-group">
+                                <label>Crop H</label>
+                                <input type="number" id="p-crop-h" step="1" min="1" oninput="updateClip()">
+                            </div>
+                        </div>
+                        <button class="btn btn-dark btn-small" style="width:100%; margin-top:4px;" onclick="resetCrop()">↺ Reset Crop</button>
                     </div>
                 </div>
 
@@ -224,6 +273,19 @@
                             <label>Fade Out (s)</label>
                             <input type="number" id="p-audio-fadeout" step="0.1" min="0" oninput="updateClip()">
                         </div>
+                    </div>
+                    <div class="prop-group">
+                        <label class="checkbox-row">
+                            <input type="checkbox" id="p-audio-normalize" onchange="updateClip()">
+                            <span>Normalize Audio (Loudness)</span>
+                        </label>
+                        <label>Target LUFS</label>
+                        <select id="p-audio-normalize-lufs" onchange="updateClip()">
+                            <option value="-14">-14 LUFS (Streaming: YouTube/Spotify)</option>
+                            <option value="-16">-16 LUFS (Podcast)</option>
+                            <option value="-18">-18 LUFS</option>
+                            <option value="-23">-23 LUFS (Broadcast EBU R128)</option>
+                        </select>
                     </div>
                 </div>
 
@@ -324,6 +386,12 @@
                 window.splitClip();
             }
 
+            // D — split e substitui: deleta o primeiro pedaço e o segundo assume
+            // sua posição na timeline e sua camada (z-order)
+            if (e.key.toLowerCase() === 'd') {
+                window.splitAndReplaceClip();
+            }
+
             if (e.key === 'Delete' || e.key === 'Backspace') {
                 window.deleteClip();
             }
@@ -394,19 +462,24 @@
         function createTextTexture(text, size, color) {
             const canvas = document.createElement('canvas');
             const ctx = canvas.getContext('2d');
+
+            // Garante valores mínimos válidos para não gerar canvas de tamanho 0
+            const safeText = (text && text.length > 0) ? text : ' ';
+            const safeSize = (size && size > 0) ? size : 1;
+            const safeColor = color || '#FFFFFF';
             
             // 1. Definir fonte primeiro para medir o texto
-            ctx.font = `bold ${size}px Arial`;
-            const metrics = ctx.measureText(text);
+            ctx.font = `bold ${safeSize}px Arial`;
+            const metrics = ctx.measureText(safeText);
             
             // 2. Definir tamanho do canvas com uma folga (padding) 
             // para a borda não ser cortada nas extremidades
             const padding = 10; 
-            canvas.width = Math.ceil(metrics.width) + padding * 2;
-            canvas.height = Math.ceil(size * 1.5);
+            canvas.width = Math.max(1, Math.ceil(metrics.width) + padding * 2);
+            canvas.height = Math.max(1, Math.ceil(safeSize * 1.5));
             
             // 3. Re-configurar a fonte e alinhamentos ANTES de desenhar
-            ctx.font = `bold ${size}px Arial`;
+            ctx.font = `bold ${safeSize}px Arial`;
             ctx.textBaseline = 'middle';
             ctx.textAlign = 'left';
 
@@ -418,11 +491,11 @@
             ctx.strokeStyle = 'black';
             ctx.lineWidth = 3;
             ctx.lineJoin = 'round';
-            ctx.strokeText(text, x, y);
+            ctx.strokeText(safeText, x, y);
 
             // 5. Desenhar o PREENCHIMENTO por cima da borda
-            ctx.fillStyle = color;
-            ctx.fillText(text, x, y);
+            ctx.fillStyle = safeColor;
+            ctx.fillText(safeText, x, y);
 
             const tex = new THREE.CanvasTexture(canvas);
             return tex;
@@ -451,6 +524,44 @@
             generateFFmpeg();
         };
 
+        window.rotateClipBy = function(deg) {
+            if (state.selectedIdx === null) return;
+            const clip = state.clips[state.selectedIdx];
+            clip.rotate = ((clip.rotate || 0) + deg + 360) % 360;
+            clip.mesh.rotation.z = -clip.rotate * Math.PI / 180;
+            document.getElementById('p-rotate').value = clip.rotate;
+            generateFFmpeg();
+        };
+
+        window.resetCrop = function() {
+            if (state.selectedIdx === null) return;
+            const clip = state.clips[state.selectedIdx];
+            clip.cropX = 0; clip.cropY = 0; clip.cropW = null; clip.cropH = null;
+            document.getElementById('p-crop-x').value = 0;
+            document.getElementById('p-crop-y').value = 0;
+            document.getElementById('p-crop-w').value = clip.nativeW || '';
+            document.getElementById('p-crop-h').value = clip.nativeH || '';
+            clip.mesh.geometry = computeGeometry(clip.nativeW, clip.nativeH, clip.fitMode);
+            applyCropUV(clip);
+            generateFFmpeg();
+        };
+
+        function applyCropUV(clip) {
+            const nW = clip.nativeW || PROJECT.w;
+            const nH = clip.nativeH || PROJECT.h;
+            const cx = clip.cropX || 0;
+            const cy = clip.cropY || 0;
+            const cw = clip.cropW || nW;
+            const ch = clip.cropH || nH;
+            const tex = clip.texture;
+            if (!tex) return;
+            // In Three.js UV: x goes left→right, y goes bottom→top
+            // cropY is from the top of the image, so we flip it
+            tex.repeat.set(cw / nW, ch / nH);
+            tex.offset.set(cx / nW, 1 - (cy / nH) - (ch / nH));
+            tex.needsUpdate = true;
+        }
+
         window.handleFiles = function(files) {
             Array.from(files).forEach(file => {
                 const video = document.createElement('video');
@@ -471,9 +582,13 @@
                     volume: 1.0,
                     fadeIn: 0,
                     fadeOut: 0,
+                    normalize: false,
+                    normalizeLufs: -14,
                     fitMode: 'stretch',
                     nativeW: PROJECT.w,
                     nativeH: PROJECT.h,
+                    rotate: 0,
+                    cropX: 0, cropY: 0, cropW: null, cropH: null,
                     mesh: null, video, texture: tex
                 };
 
@@ -514,6 +629,8 @@
                     fitMode: 'stretch',
                     nativeW: PROJECT.w,
                     nativeH: PROJECT.h,
+                    rotate: 0,
+                    cropX: 0, cropY: 0, cropW: null, cropH: null,
                     mesh: null, texture: null
                 };
 
@@ -558,6 +675,8 @@
                     volume: 1.0,
                     fadeIn: 0,
                     fadeOut: 0,
+                    normalize: false,
+                    normalizeLufs: -14,
                     audio,
                     // Audio clips need a dummy mesh (invisible) just to satisfy the lane system
                     mesh: { position: { x: 0, y: 0, z: 0 }, visible: false, scale: { set: () => {} } }
@@ -757,16 +876,27 @@
                 const isVideo = clip.type === 'video';
                 document.getElementById('srcstart-group').style.display = isVideo ? 'block' : 'none';
                 document.getElementById('vol-group').style.display = isVideo ? 'block' : 'none';
+                document.getElementById('normalize-group').style.display = isVideo ? 'block' : 'none';
                 if(isVideo) {
                     document.getElementById('p-srcstart').value = clip.sourceStart;
                     document.getElementById('p-volume').value = clip.volume;
+                    document.getElementById('p-normalize').checked = !!clip.normalize;
+                    document.getElementById('p-normalize-lufs').value = clip.normalizeLufs ?? -14;
                 }
+                // Rotate & Crop
+                document.getElementById('p-rotate').value = clip.rotate || 0;
+                document.getElementById('p-crop-x').value = clip.cropX || 0;
+                document.getElementById('p-crop-y').value = clip.cropY || 0;
+                document.getElementById('p-crop-w').value = clip.cropW || clip.nativeW || '';
+                document.getElementById('p-crop-h').value = clip.cropH || clip.nativeH || '';
             } else if (isAudio) {
                 document.getElementById('p-audio-path').value = clip.path;
                 document.getElementById('p-audio-volume').value = clip.volume;
                 document.getElementById('p-audio-srcstart').value = clip.sourceStart;
                 document.getElementById('p-audio-fadein').value = clip.fadeIn;
                 document.getElementById('p-audio-fadeout').value = clip.fadeOut;
+                document.getElementById('p-audio-normalize').checked = !!clip.normalize;
+                document.getElementById('p-audio-normalize-lufs').value = clip.normalizeLufs ?? -14;
             } else {
                 document.getElementById('p-text-content').value = clip.text;
                 document.getElementById('p-text-font').value = clip.fontPath;
@@ -815,13 +945,15 @@
                 updateIfValid('p-audio-fadein', 'fadeIn');
                 updateIfValid('p-audio-fadeout', 'fadeOut');
                 clip.audio.volume = Math.min(1, clip.volume);
+                clip.normalize = document.getElementById('p-audio-normalize').checked;
+                clip.normalizeLufs = parseFloat(document.getElementById('p-audio-normalize-lufs').value);
             } else {
                 updateIfValid('p-fadein', 'fadeIn');
                 updateIfValid('p-fadeout', 'fadeOut');
-                updateIfValid('p-x', 'meshPositionX');
-                updateIfValid('p-y', 'meshPositionY');
-                clip.mesh.position.x = parseFloat(document.getElementById('p-x').value);
-                clip.mesh.position.y = parseFloat(document.getElementById('p-y').value);
+                const xVal = document.getElementById('p-x').value;
+                const yVal = document.getElementById('p-y').value;
+                if (xVal !== "") clip.mesh.position.x = parseFloat(xVal);
+                if (yVal !== "") clip.mesh.position.y = parseFloat(yVal);
 
                 if(clip.type === 'video' || clip.type === 'image') {
                     clip.path = document.getElementById('p-path').value;
@@ -830,10 +962,37 @@
                         clip.scale = parseFloat(scaleVal);
                         clip.mesh.scale.set(clip.scale, clip.scale, 1);
                     }
+                    // Rotate
+                    const rotVal = document.getElementById('p-rotate').value;
+                    if (rotVal !== "") {
+                        clip.rotate = parseFloat(rotVal);
+                        clip.mesh.rotation.z = -clip.rotate * Math.PI / 180;
+                    }
+                    // Crop
+                    const cxVal = document.getElementById('p-crop-x').value;
+                    const cyVal = document.getElementById('p-crop-y').value;
+                    const cwVal = document.getElementById('p-crop-w').value;
+                    const chVal = document.getElementById('p-crop-h').value;
+                    clip.cropX = cxVal !== "" ? parseFloat(cxVal) : 0;
+                    clip.cropY = cyVal !== "" ? parseFloat(cyVal) : 0;
+                    clip.cropW = cwVal !== "" ? parseFloat(cwVal) : null;
+                    clip.cropH = chVal !== "" ? parseFloat(chVal) : null;
+                    // Update geometry to preview crop aspect ratio
+                    const cw = clip.cropW || clip.nativeW || PROJECT.w;
+                    const ch = clip.cropH || clip.nativeH || PROJECT.h;
+                    if (cw > 0 && ch > 0) {
+                        const s = Math.min(PROJECT.w / cw, PROJECT.h / ch);
+                        clip.mesh.geometry = new THREE.PlaneGeometry(cw * s, ch * s);
+                        // Update UV to show only the cropped region
+                        applyCropUV(clip);
+                    }
+
                     if(clip.type === 'video') {
                         updateIfValid('p-srcstart', 'sourceStart');
                         updateIfValid('p-volume', 'volume');
                         clip.video.volume = Math.min(1, clip.volume);
+                        clip.normalize = document.getElementById('p-normalize').checked;
+                        clip.normalizeLufs = parseFloat(document.getElementById('p-normalize-lufs').value);
                     }
                 } else {
                     clip.text = document.getElementById('p-text-content').value;
@@ -880,10 +1039,13 @@
             generateFFmpeg();
         };
 
-        window.splitClip = function() {
-            if (state.selectedIdx === null) return;
+        // Núcleo do split: corta o clipe selecionado no playhead e retorna as duas partes.
+        // Não atualiza UI/seleção/ffmpeg — isso é responsabilidade de quem chama.
+        function performSplit() {
+            if (state.selectedIdx === null) return null;
             const clip = state.clips[state.selectedIdx];
             if (state.time > clip.timelineStart && state.time < (clip.timelineStart + clip.duration)) {
+                const originalStart = clip.timelineStart;
                 const splitTime = state.time;
                 const offsetFromStart = splitTime - clip.timelineStart;
                 const originalDuration = clip.duration;
@@ -891,70 +1053,148 @@
                 const newClipDuration = originalDuration - clip.duration;
                 
                 let newMesh;
+                let secondClip;
                 if (clip.type === 'video') {
                     const video = document.createElement('video');
                     video.src = clip.video.src;
                     video.muted = false; video.loop = true;
                     const tex = new THREE.VideoTexture(video);
-                    newMesh = new THREE.Mesh(computeGeometry(clip.nativeW, clip.nativeH, clip.fitMode), new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, transparent: true }));
+                    // Use crop-aware geometry (same logic as updateClip)
+                    const vcw = clip.cropW || clip.nativeW;
+                    const vch = clip.cropH || clip.nativeH;
+                    const vcropScale = Math.min(PROJECT.w / vcw, PROJECT.h / vch);
+                    const vCropGeom = new THREE.PlaneGeometry(vcw * vcropScale, vch * vcropScale);
+                    newMesh = new THREE.Mesh(vCropGeom, new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, transparent: true }));
                     newMesh.visible = false;
                     newMesh.position.set(clip.mesh.position.x, clip.mesh.position.y, 0);
                     newMesh.scale.set(clip.scale, clip.scale, 1);
+                    newMesh.rotation.z = -(clip.rotate || 0) * Math.PI / 180;
                     scene.add(newMesh);
-                    state.clips.push({
+                    const newVideoClip = {
                         id: Date.now() + Math.random(), type: 'video', path: clip.path,
                         timelineStart: splitTime, sourceStart: clip.sourceStart + offsetFromStart,
                         duration: newClipDuration, scale: clip.scale, volume: clip.volume,
                         fadeIn: 0, fadeOut: clip.fadeOut,
+                        normalize: clip.normalize || false, normalizeLufs: clip.normalizeLufs ?? -14,
                         fitMode: clip.fitMode, nativeW: clip.nativeW, nativeH: clip.nativeH,
+                        rotate: clip.rotate || 0,
+                        cropX: clip.cropX || 0, cropY: clip.cropY || 0, cropW: clip.cropW || null, cropH: clip.cropH || null,
                         mesh: newMesh, video, texture: tex
-                    });
+                    };
+                    state.clips.push(newVideoClip);
+                    // Apply crop UV so the new clip shows the same cropped region
+                    applyCropUV(newVideoClip);
+                    secondClip = newVideoClip;
                 } else if (clip.type === 'image') {
-                    const tex = clip.texture;
-                    newMesh = new THREE.Mesh(computeGeometry(clip.nativeW, clip.nativeH, clip.fitMode), new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, transparent: true }));
+                    // Clone the texture so each clip has independent UV (offset/repeat) state
+                    const tex = clip.texture.clone();
+                    tex.needsUpdate = true;
+                    // Use crop-aware geometry (same logic as updateClip)
+                    const cw = clip.cropW || clip.nativeW;
+                    const ch = clip.cropH || clip.nativeH;
+                    const cropScale = Math.min(PROJECT.w / cw, PROJECT.h / ch);
+                    const cropGeom = new THREE.PlaneGeometry(cw * cropScale, ch * cropScale);
+                    newMesh = new THREE.Mesh(cropGeom, new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, transparent: true }));
                     newMesh.visible = false;
                     newMesh.position.set(clip.mesh.position.x, clip.mesh.position.y, 0);
                     newMesh.scale.set(clip.scale, clip.scale, 1);
+                    newMesh.rotation.z = -(clip.rotate || 0) * Math.PI / 180;
                     scene.add(newMesh);
-                    state.clips.push({
+                    const newImageClip = {
                         id: Date.now() + Math.random(), type: 'image', path: clip.path,
                         timelineStart: splitTime, duration: newClipDuration, scale: clip.scale,
                         fadeIn: 0, fadeOut: clip.fadeOut,
                         fitMode: clip.fitMode, nativeW: clip.nativeW, nativeH: clip.nativeH,
+                        rotate: clip.rotate || 0,
+                        cropX: clip.cropX || 0, cropY: clip.cropY || 0, cropW: clip.cropW || null, cropH: clip.cropH || null,
                         mesh: newMesh, texture: tex
-                    });
+                    };
+                    state.clips.push(newImageClip);
+                    // Apply crop UV so the new clip shows the same cropped region
+                    applyCropUV(newImageClip);
+                    secondClip = newImageClip;
                 } else if (clip.type === 'audio') {
                     const newAudio = document.createElement('audio');
                     newAudio.src = clip.audio.src;
-                    state.clips.push({
+                    const newAudioClip = {
                         id: Date.now() + Math.random(), type: 'audio', path: clip.path,
                         timelineStart: splitTime,
                         sourceStart: clip.sourceStart + offsetFromStart,
                         duration: newClipDuration,
                         volume: clip.volume,
                         fadeIn: 0, fadeOut: clip.fadeOut,
+                        normalize: clip.normalize || false, normalizeLufs: clip.normalizeLufs ?? -14,
                         audio: newAudio,
                         mesh: { position: { x: 0, y: 0, z: 0 }, visible: false, scale: { set: () => {} } }
-                    });
+                    };
+                    state.clips.push(newAudioClip);
+                    secondClip = newAudioClip;
                 } else {
                     const tex = createTextTexture(clip.text, clip.fontSize, clip.textColor);
                     newMesh = new THREE.Mesh(new THREE.PlaneGeometry(tex.image.width, tex.image.height), new THREE.MeshBasicMaterial({ map: tex, transparent: true, side: THREE.DoubleSide }));
                     newMesh.visible = false;
+                    newMesh.position.set(clip.mesh.position.x, clip.mesh.position.y, 0);
+                    newMesh.rotation.z = clip.mesh.rotation.z;
                     scene.add(newMesh);
-                    state.clips.push({
+                    const newTextClip = {
                         id: Date.now() + Math.random(), type: 'text', text: clip.text,
                         fontSize: clip.fontSize, textColor: clip.textColor, fontPath: clip.fontPath,
                         timelineStart: splitTime, duration: newClipDuration, fadeIn: 0, fadeOut: clip.fadeOut, mesh: newMesh, texture: tex
-                    });
+                    };
+                    state.clips.push(newTextClip);
+                    secondClip = newTextClip;
                 }
 
-                const newIndex = state.clips.length - 1;
-                selectClip(newIndex);
-
-                updateLayering();
-                syncUI();
-                generateFFmpeg();
+                return { firstClip: clip, secondClip, originalStart };
             }
+            return null;
+        }
+
+        window.splitClip = function() {
+            const result = performSplit();
+            if (!result) return;
+            const newIndex = state.clips.length - 1;
+            selectClip(newIndex);
+
+            updateLayering();
+            syncUI();
+            generateFFmpeg();
+        };
+
+        // D — corta o clipe selecionado no playhead, deleta o primeiro pedaço,
+        // e o segundo pedaço assume a posição na timeline E a camada (índice/z-order)
+        // que o primeiro pedaço ocupava.
+        window.splitAndReplaceClip = function() {
+            const idx = state.selectedIdx;
+            const result = performSplit();
+            if (!result) return;
+            const { firstClip, secondClip, originalStart } = result;
+
+            // Libera os recursos do primeiro pedaço (que será descartado).
+            // Importante: pausar video/audio explicitamente, pois esses elementos
+            // continuam tocando (inclusive o áudio) mesmo depois de removidos da cena 3D.
+            if (firstClip.type === 'video') {
+                firstClip.video.pause();
+                scene.remove(firstClip.mesh);
+            } else if (firstClip.type === 'audio') {
+                if (firstClip.audio) firstClip.audio.pause();
+            } else {
+                scene.remove(firstClip.mesh);
+            }
+
+            // Remove o segundo pedaço de onde foi inserido (fim do array)
+            const secondIdx = state.clips.indexOf(secondClip);
+            state.clips.splice(secondIdx, 1);
+
+            // O segundo pedaço assume a posição na timeline do primeiro
+            secondClip.timelineStart = originalStart;
+
+            // E assume a camada (índice no array) do primeiro pedaço, substituindo-o
+            state.clips[idx] = secondClip;
+
+            updateLayering();
+            selectClip(idx);
+            generateFFmpeg();
         };
 
         window.copyClip = function() {
@@ -971,9 +1211,16 @@
                 volume: src.volume,
                 fadeIn: src.fadeIn || 0,
                 fadeOut: src.fadeOut || 0,
+                normalize: src.normalize || false,
+                normalizeLufs: src.normalizeLufs ?? -14,
                 fitMode: src.fitMode,
                 nativeW: src.nativeW,
                 nativeH: src.nativeH,
+                rotate: src.rotate || 0,
+                cropX: src.cropX || 0,
+                cropY: src.cropY || 0,
+                cropW: src.cropW || null,
+                cropH: src.cropH || null,
                 // video src url
                 videoSrc: src.type === 'video' ? src.video.src : null,
                 // audio src url
@@ -988,6 +1235,7 @@
                 fontSize: src.fontSize,
                 textColor: src.textColor,
                 fontPath: src.fontPath,
+                textRotate: src.type === 'text' ? src.mesh.rotation.z : 0,
             };
             // Flash the selected clip block to give visual feedback
             const blocks = document.querySelectorAll('.clip-block.selected');
@@ -1016,13 +1264,17 @@
                 mesh.visible = false;
                 mesh.position.set(c.posX, c.posY, 0);
                 mesh.scale.set(c.scale, c.scale, 1);
+                mesh.rotation.z = -(c.rotate || 0) * Math.PI / 180;
                 scene.add(mesh);
                 state.clips.push({
                     id: Date.now() + Math.random(), type: 'video', path: c.path,
                     timelineStart: pasteStart, sourceStart: c.sourceStart,
                     duration: c.duration, scale: c.scale, volume: c.volume,
                     fadeIn: c.fadeIn, fadeOut: c.fadeOut,
+                    normalize: c.normalize || false, normalizeLufs: c.normalizeLufs ?? -14,
                     fitMode: c.fitMode, nativeW: c.nativeW, nativeH: c.nativeH,
+                    rotate: c.rotate || 0,
+                    cropX: c.cropX || 0, cropY: c.cropY || 0, cropW: c.cropW || null, cropH: c.cropH || null,
                     mesh, video, texture: tex
                 });
             } else if (c.type === 'image') {
@@ -1033,12 +1285,15 @@
                 mesh.visible = false;
                 mesh.position.set(c.posX, c.posY, 0);
                 mesh.scale.set(c.scale, c.scale, 1);
+                mesh.rotation.z = -(c.rotate || 0) * Math.PI / 180;
                 scene.add(mesh);
                 state.clips.push({
                     id: Date.now() + Math.random(), type: 'image', path: c.path,
                     timelineStart: pasteStart, duration: c.duration, scale: c.scale,
                     fadeIn: c.fadeIn, fadeOut: c.fadeOut,
                     fitMode: c.fitMode, nativeW: c.nativeW, nativeH: c.nativeH,
+                    rotate: c.rotate || 0,
+                    cropX: c.cropX || 0, cropY: c.cropY || 0, cropW: c.cropW || null, cropH: c.cropH || null,
                     mesh, texture: c.texture
                 });
             } else if (c.type === 'audio') {
@@ -1049,6 +1304,7 @@
                     timelineStart: pasteStart, sourceStart: c.sourceStart,
                     duration: c.duration, volume: c.volume,
                     fadeIn: c.fadeIn, fadeOut: c.fadeOut,
+                    normalize: c.normalize || false, normalizeLufs: c.normalizeLufs ?? -14,
                     audio,
                     mesh: { position: { x: 0, y: 0, z: 0 }, visible: false, scale: { set: () => {} } }
                 });
@@ -1060,6 +1316,7 @@
                 );
                 mesh.visible = false;
                 mesh.position.set(c.posX, c.posY, 0);
+                mesh.rotation.z = c.textRotate || 0;
                 scene.add(mesh);
                 state.clips.push({
                     id: Date.now() + Math.random(), type: 'text',
@@ -1203,6 +1460,19 @@
             });
         }
 
+        function escapePath(p) {
+            // Escapa aspas duplas para uso seguro dentro de -i "path"
+            return String(p || '').replace(/"/g, '\\"');
+        }
+
+        function escapeDrawtext(s) {
+            // drawtext usa : e ' como delimitadores especiais — precisam ser escapados
+            return String(s || '')
+                .replace(/\\/g, '\\\\\\\\')
+                .replace(/:/g, '\\:')
+                .replace(/'/g, "\u2019");
+        }
+
         function generateFFmpeg() {
             if (state.clips.length === 0) {
                 document.getElementById('prompt-text').innerText = "Import videos or add text to generate command...";
@@ -1218,11 +1488,11 @@
                 if (clip.type === 'video' || clip.type === 'image') {
                     clip.inputIndex = inputCounter++; 
                     const ssFlag = (clip.type === 'video' && clip.sourceStart > 0) ? `-ss ${clip.sourceStart} ` : ``;
-                    inputs += (clip.type === 'image' ? `-loop 1 ` : ``) + `${ssFlag}-i "${clip.path}" `;
+                    inputs += (clip.type === 'image' ? `-loop 1 ` : ``) + `${ssFlag}-i "${escapePath(clip.path)}" `;
                 } else if (clip.type === 'audio') {
                     clip.inputIndex = inputCounter++;
                     const ssFlag = clip.sourceStart > 0 ? `-ss ${clip.sourceStart} ` : ``;
-                    inputs += `${ssFlag}-i "${clip.path}" `;
+                    inputs += `${ssFlag}-i "${escapePath(clip.path)}" `;
                 } else {
                     clip.inputIndex = null; 
                 }
@@ -1252,18 +1522,37 @@
                         vFilter = `setpts=PTS-STARTPTS,setpts=PTS+${globalStart}/TB`;
                     }
 
+                    // Crop filter (applied before scale)
+                    const hasCrop = clip.cropW || clip.cropH || clip.cropX || clip.cropY;
+                    if (hasCrop) {
+                        const cw = clip.cropW || clip.nativeW;
+                        const ch = clip.cropH || clip.nativeH;
+                        const cx = clip.cropX || 0;
+                        const cy = clip.cropY || 0;
+                        vFilter += `,crop=${Math.round(cw)}:${Math.round(ch)}:${Math.round(cx)}:${Math.round(cy)}`;
+                    }
+
+                    // Compute final dimensions BEFORE applying rotate filter
+                    // (rotate changes the bounding box, so we scale first, then rotate)
+                    // If cropped, the effective native size is the crop region, not the full frame
                     const isFit = (clip.fitMode || 'fit') === 'fit';
+                    const effectiveNativeW = (clip.cropW || clip.nativeW) || PROJECT.w;
+                    const effectiveNativeH = (clip.cropH || clip.nativeH) || PROJECT.h;
                     let finalW, finalH;
-                    if (isFit && clip.nativeW && clip.nativeH) {
-                        const s = Math.min(PROJECT.w / clip.nativeW, PROJECT.h / clip.nativeH) * clip.scale;
-                        finalW = clip.nativeW * s;
-                        finalH = clip.nativeH * s;
+                    if (isFit && effectiveNativeW && effectiveNativeH) {
+                        const s = Math.min(PROJECT.w / effectiveNativeW, PROJECT.h / effectiveNativeH) * clip.scale;
+                        finalW = effectiveNativeW * s;
+                        finalH = effectiveNativeH * s;
                     } else {
                         finalW = PROJECT.w * clip.scale;
                         finalH = PROJECT.h * clip.scale;
                     }
+
+                    // Rotate filter (applied AFTER scale so output dimensions are correct)
+                    // For overlay positioning we also need to know the post-rotate bounding box
                     let overlayX = 0;
                     let overlayY = 0;
+                    let rotatedW = finalW, rotatedH = finalH;
 
                     if (clip.scale > 4) {
                         if (isFit && clip.nativeW && clip.nativeH) {
@@ -1281,13 +1570,42 @@
                         overlayX = 0;
                         overlayY = 0;
                     } else {
+                        // Normal scale — apply FIRST so rotate works on the already-scaled frame
                         if (isFit && clip.nativeW && clip.nativeH) {
                             vFilter += `,scale=${Math.round(finalW)}:${Math.round(finalH)}:force_original_aspect_ratio=decrease`;
                         } else {
                             vFilter += `,scale=${Math.round(finalW)}:${Math.round(finalH)}`;
                         }
-                        overlayX = Math.round(960 + clip.mesh.position.x - finalW / 2);
-                        overlayY = Math.round(540 - clip.mesh.position.y - finalH / 2);
+
+                        // Rotate AFTER scale so output dimensions stay predictable
+                        if (clip.rotate && clip.rotate !== 0) {
+                            const deg = ((clip.rotate % 360) + 360) % 360;
+                            if (deg === 90) {
+                                vFilter += `,transpose=1`;
+                                rotatedW = finalH; rotatedH = finalW;
+                            } else if (deg === 180) {
+                                vFilter += `,transpose=1,transpose=1`;
+                                // 180° keeps same dimensions
+                            } else if (deg === 270) {
+                                vFilter += `,transpose=2`;
+                                rotatedW = finalH; rotatedH = finalW;
+                            } else {
+                                // Arbitrary angle: transparent fill, expand bounding box to avoid clipping
+                                const rad = deg * Math.PI / 180;
+                                const cosA = Math.abs(Math.cos(rad));
+                                const sinA = Math.abs(Math.sin(rad));
+                                rotatedW = Math.ceil(finalW * cosA + finalH * sinA);
+                                rotatedH = Math.ceil(finalW * sinA + finalH * cosA);
+                                // Ensure even dimensions for codec compatibility
+                                rotatedW += rotatedW % 2;
+                                rotatedH += rotatedH % 2;
+                                vFilter += `,rotate=${rad.toFixed(6)}:c=none:ow=${rotatedW}:oh=${rotatedH}`;
+                                vFilter += `,format=yuva420p`;
+                            }
+                        }
+
+                        overlayX = Math.round(960 + clip.mesh.position.x - rotatedW / 2);
+                        overlayY = Math.round(540 - clip.mesh.position.y - rotatedH / 2);
                     }
 
                     if (fadeInTime > 0) vFilter += `,fade=t=in:st=${globalStart}:d=${fadeInTime}`;
@@ -1305,6 +1623,7 @@
                         const delayMs = Math.round(clip.timelineStart * 1000);
                         let aFilter = `atrim=start=0:duration=${duration},asetpts=PTS-STARTPTS`;
                         aFilter += `,asetpts=PTS+${globalStart}/TB`;
+                        if (clip.normalize) aFilter += `,loudnorm=I=${clip.normalizeLufs}:TP=-1.0:LRA=11`;
                         if (fadeInTime > 0) aFilter += `,afade=t=in:st=${globalStart}:d=${fadeInTime}`;
                         if (fadeOutTime > 0) aFilter += `,afade=t=out:st=${fadeOutStartGlobal}:d=${fadeOutTime}`;
                         aFilter += `,volume=${clip.volume},adelay=${delayMs}|${delayMs},aresample=44100`;
@@ -1321,6 +1640,7 @@
                     const fadeOutStartGlobal = globalEnd - fadeOutTime;
                     let aFilter = `atrim=start=0:duration=${clip.duration},asetpts=PTS-STARTPTS`;
                     aFilter += `,asetpts=PTS+${globalStart}/TB`;
+                    if (clip.normalize) aFilter += `,loudnorm=I=${clip.normalizeLufs}:TP=-1.0:LRA=11`;
                     if (fadeInTime > 0) aFilter += `,afade=t=in:st=${globalStart}:d=${fadeInTime}`;
                     if (fadeOutTime > 0) aFilter += `,afade=t=out:st=${fadeOutStartGlobal}:d=${fadeOutTime}`;
                     aFilter += `,volume=${clip.volume},adelay=${delayMs}|${delayMs},aresample=44100`;
@@ -1340,7 +1660,7 @@
                     }
                     const prev = ovlCounter === 0 ? `[bg]` : `[ovl${ovlCounter-1}]`;
                     const next = `[ovl${ovlCounter}]`;
-                    ovlChain += `${prev}drawtext=text='${clip.text}':fontfile='${clip.fontPath}':x=${posX}:y=${posY}:fontsize=${clip.fontSize}:fontcolor=${finalColor}:borderw=3:bordercolor=black:enable='between(t,${globalStart},${globalEnd})'${next},`;
+                    ovlChain += `${prev}drawtext=text='${escapeDrawtext(clip.text)}':fontfile='${escapePath(clip.fontPath)}':x=${posX}:y=${posY}:fontsize=${clip.fontSize}:fontcolor=${finalColor}:borderw=3:bordercolor=black:enable='between(t,${globalStart},${globalEnd})'${next},`;
                     ovlCounter++;
                 }
             });
@@ -1371,10 +1691,16 @@
 
 
         window.copyPrompt = function() {
-            navigator.clipboard.writeText(document.getElementById('prompt-text').innerText);
+            const text = document.getElementById('prompt-text').innerText;
             const b = document.querySelector('.copy-btn');
-            b.innerText = 'Copiado!';
-            setTimeout(() => b.innerText = 'Copy Command', 2000);
+            if (!text || text.startsWith('Import videos')) return;
+            navigator.clipboard.writeText(text).then(() => {
+                b.innerText = 'Copiado!';
+                setTimeout(() => b.innerText = 'Copy Command', 2000);
+            }).catch(() => {
+                b.innerText = 'Falhou — copie manualmente';
+                setTimeout(() => b.innerText = 'Copy Command', 2000);
+            });
         };
 
         const clock = new THREE.Clock();
