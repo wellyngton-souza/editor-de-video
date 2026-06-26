@@ -1444,14 +1444,14 @@
             state.clips.forEach(c => {
                 if(c.type === 'video') {
                     const active = state.time >= c.timelineStart && state.time <= (c.timelineStart + c.duration);
-                    if (active) state.isPlaying ? c.video.play() : c.video.pause();
+                    if (active) state.isPlaying ? c.video.play().catch(() => {}) : c.video.pause();
                 }
                 if(c.type === 'audio') {
                     const active = state.time >= c.timelineStart && state.time <= (c.timelineStart + c.duration);
                     if (active) {
                         if (state.isPlaying) {
                             c.audio.currentTime = (state.time - c.timelineStart) + c.sourceStart;
-                            c.audio.play();
+                            c.audio.play().catch(() => {});
                         } else {
                             c.audio.pause();
                         }
@@ -1473,11 +1473,41 @@
                 .replace(/'/g, "\u2019");
         }
 
+        // --- SOLUÇÃO PARA O CONSUMO EXCESSIVO DE MEMÓRIA COM MÚLTIPLOS loudnorm ---
+        // Em vez de rodar N filtros loudnorm em paralelo dentro do mesmo filter_complex
+        // (o que faz o FFmpeg ter que bufferizar várias trilhas simultaneamente enquanto
+        // cada loudnorm processa sua análise de loudness — isso é o que explode a RAM),
+        // cada clipe marcado para normalização é processado em um comando ffmpeg SEPARADO
+        // e SEQUENCIAL, gerando um arquivo .wav já normalizado. O comando final de montagem
+        // não usa mais loudnorm nenhum: só consome os .wav prontos com volume/adelay simples,
+        // que é praticamente sem custo de memória.
+        function buildNormalizationScript(clips) {
+            const lines = [];
+            const fileMap = {}; // clip.id -> nome do arquivo normalizado
+
+            clips.forEach(clip => {
+                if (!clip.normalize) return;
+                if (clip.type !== 'video' && clip.type !== 'audio') return;
+
+                const outFile = `tmp_norm_${clip.id}.wav`;
+                const ssFlag = clip.sourceStart > 0 ? `-ss ${clip.sourceStart} ` : ``;
+                // Cada chamada aqui roda isoladamente (uma de cada vez), então o pico de
+                // memória do loudnorm nunca se soma ao de outras camadas.
+                lines.push(`ffmpeg -y ${ssFlag}-i "${escapePath(clip.path)}" -t ${clip.duration} -vn -af "loudnorm=I=${clip.normalizeLufs}:TP=-1.0:LRA=11" -ar 44100 -ac 2 "${outFile}"`);
+                fileMap[clip.id] = outFile;
+            });
+
+            return { lines, fileMap };
+        }
+
         function generateFFmpeg() {
             if (state.clips.length === 0) {
                 document.getElementById('prompt-text').innerText = "Import videos or add text to generate command...";
                 return;
             }
+
+            // Gera (se necessário) o script de pré-normalização e o mapa de arquivos já normalizados
+            const { lines: normLines, fileMap: normFileMap } = buildNormalizationScript(state.clips);
 
             let inputCounter = 0;
             let audioCounter = 0; 
@@ -1485,14 +1515,26 @@
             let totalT = 0;
 
             state.clips.forEach(clip => {
+                const normFile = normFileMap[clip.id]; // undefined se o clipe não está normalizando
                 if (clip.type === 'video' || clip.type === 'image') {
                     clip.inputIndex = inputCounter++; 
                     const ssFlag = (clip.type === 'video' && clip.sourceStart > 0) ? `-ss ${clip.sourceStart} ` : ``;
                     inputs += (clip.type === 'image' ? `-loop 1 ` : ``) + `${ssFlag}-i "${escapePath(clip.path)}" `;
+
+                    if (clip.type === 'video' && normFile) {
+                        // Áudio já normalizado entra como um input separado, só com -t (já vem cortado)
+                        clip.audioInputIndex = inputCounter++;
+                        inputs += `-i "${normFile}" `;
+                    }
                 } else if (clip.type === 'audio') {
                     clip.inputIndex = inputCounter++;
-                    const ssFlag = clip.sourceStart > 0 ? `-ss ${clip.sourceStart} ` : ``;
-                    inputs += `${ssFlag}-i "${escapePath(clip.path)}" `;
+                    if (normFile) {
+                        // Usa direto o wav já normalizado (já cortado/trimado no passo 1)
+                        inputs += `-i "${normFile}" `;
+                    } else {
+                        const ssFlag = clip.sourceStart > 0 ? `-ss ${clip.sourceStart} ` : ``;
+                        inputs += `${ssFlag}-i "${escapePath(clip.path)}" `;
+                    }
                 } else {
                     clip.inputIndex = null; 
                 }
@@ -1618,12 +1660,14 @@
                     ovlCounter++;
 
                     if (clip.type === 'video') {
-                        const aIn = `[${clip.inputIndex}:a]`;
+                        const usingNormFile = clip.audioInputIndex !== undefined;
+                        const aIn = usingNormFile ? `[${clip.audioInputIndex}:a]` : `[${clip.inputIndex}:a]`;
                         const aP = `[a${audioCounter}]`;
                         const delayMs = Math.round(clip.timelineStart * 1000);
                         let aFilter = `atrim=start=0:duration=${duration},asetpts=PTS-STARTPTS`;
                         aFilter += `,asetpts=PTS+${globalStart}/TB`;
-                        if (clip.normalize) aFilter += `,loudnorm=I=${clip.normalizeLufs}:TP=-1.0:LRA=11`;
+                        // loudnorm já foi aplicado no passo 1 (script de pré-normalização) — não repetir aqui
+                        if (clip.normalize && !usingNormFile) aFilter += `,loudnorm=I=${clip.normalizeLufs}:TP=-1.0:LRA=11`;
                         if (fadeInTime > 0) aFilter += `,afade=t=in:st=${globalStart}:d=${fadeInTime}`;
                         if (fadeOutTime > 0) aFilter += `,afade=t=out:st=${fadeOutStartGlobal}:d=${fadeOutTime}`;
                         aFilter += `,volume=${clip.volume},adelay=${delayMs}|${delayMs},aresample=44100`;
@@ -1632,6 +1676,7 @@
                     }
                 } else if (clip.type === 'audio') {
                     // Standalone audio clip — only audio chain, no overlay
+                    const usingNormFile = !!normFileMap[clip.id];
                     const aIn = `[${clip.inputIndex}:a]`;
                     const aP = `[a${audioCounter}]`;
                     const delayMs = Math.round(clip.timelineStart * 1000);
@@ -1640,7 +1685,8 @@
                     const fadeOutStartGlobal = globalEnd - fadeOutTime;
                     let aFilter = `atrim=start=0:duration=${clip.duration},asetpts=PTS-STARTPTS`;
                     aFilter += `,asetpts=PTS+${globalStart}/TB`;
-                    if (clip.normalize) aFilter += `,loudnorm=I=${clip.normalizeLufs}:TP=-1.0:LRA=11`;
+                    // loudnorm já foi aplicado no passo 1 (script de pré-normalização) — não repetir aqui
+                    if (clip.normalize && !usingNormFile) aFilter += `,loudnorm=I=${clip.normalizeLufs}:TP=-1.0:LRA=11`;
                     if (fadeInTime > 0) aFilter += `,afade=t=in:st=${globalStart}:d=${fadeInTime}`;
                     if (fadeOutTime > 0) aFilter += `,afade=t=out:st=${fadeOutStartGlobal}:d=${fadeOutTime}`;
                     aFilter += `,volume=${clip.volume},adelay=${delayMs}|${delayMs},aresample=44100`;
@@ -1680,13 +1726,30 @@
                 // Listamos o silêncio + todos os vídeos: [silent][a0][a1]...
                 const audioLabels = `[silent]` + Array.from({length: audioCounter}, (_, i) => `[a${i}]`).join('');
                 // Mixamos todos eles. O número de inputs é audioCounter + 1 (por causa do silêncio)
-                finalA = `${silentBase};${aChains.join(',')};${audioLabels}amix=inputs=${audioCounter + 1}:duration=longest${aOut}`;
+                finalA = `${silentBase};${aChains.join(',')};${audioLabels}amix=inputs=${audioCounter + 1}:duration=longest:normalize=0${aOut}`;
             } else {
                 finalA = `${silentBase}`;
                 aOut = "[silent]";
             }
             
-            document.getElementById('prompt-text').innerText = `ffmpeg ${inputs} -filter_complex "${finalVString};${finalA}" -map "${vOut}" -map "${aOut}" -t ${totalT} -c:v libx264 -c:a aac -movflags +faststart output.mp4`;
+            const mainCmd = `ffmpeg ${inputs} -filter_complex "${finalVString};${finalA}" -map "${vOut}" -map "${aOut}" -t ${totalT} -c:v libx264 -c:a aac -movflags +faststart output.mp4`;
+
+            if (normLines.length > 0) {
+                const script =
+`# PASSO 1/2 — Pré-normalização (rode estas linhas UMA POR VEZ / em sequência).
+# Isso evita ter N filtros loudnorm rodando ao mesmo tempo no comando final,
+# que é a causa do consumo excessivo de memória RAM.
+${normLines.join('\n')}
+
+# PASSO 2/2 — Comando final de montagem (sem loudnorm, baixo consumo de memória)
+${mainCmd}
+
+# (Opcional) depois de renderizar, pode apagar os temporários:
+# rm ${Object.values(normFileMap).map(f => `"${f}"`).join(' ')}`;
+                document.getElementById('prompt-text').innerText = script;
+            } else {
+                document.getElementById('prompt-text').innerText = mainCmd;
+            }
         }
 
 
@@ -1746,14 +1809,14 @@
                             if(clip.type === 'video') {
                                 if (clip.video.paused) {
                                     clip.video.currentTime = (state.time - clip.timelineStart) + clip.sourceStart;
-                                    clip.video.play();
+                                    clip.video.play().catch(() => {});
                                 }
                             }
                             if(clip.type === 'audio') {
                                 if (clip.audio.paused) {
                                     clip.audio.currentTime = (state.time - clip.timelineStart) + clip.sourceStart;
                                     clip.audio.volume = Math.min(1, clip.volume);
-                                    clip.audio.play();
+                                    clip.audio.play().catch(() => {});
                                 }
                             }
                         } else {
