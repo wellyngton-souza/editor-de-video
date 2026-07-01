@@ -195,6 +195,16 @@
                             <input type="number" id="p-volume" step="0.1" oninput="updateClip()">
                         </div>
                     </div>
+                    <div class="prop-group" id="speed-group">
+                        <label>Speed (0.25x – 4x)</label>
+                        <input type="number" id="p-speed" step="0.05" min="0.25" max="4" oninput="updateClip()">
+                        <div style="display:flex; gap:6px; margin-top:6px;">
+                            <button class="btn btn-dark btn-small" style="flex:1;" onclick="setClipSpeed(0.5)">0.5x</button>
+                            <button class="btn btn-dark btn-small" style="flex:1;" onclick="setClipSpeed(1)">1x</button>
+                            <button class="btn btn-dark btn-small" style="flex:1;" onclick="setClipSpeed(1.5)">1.5x</button>
+                            <button class="btn btn-dark btn-small" style="flex:1;" onclick="setClipSpeed(2)">2x</button>
+                        </div>
+                    </div>
                     <div class="prop-group" id="normalize-group">
                         <label class="checkbox-row">
                             <input type="checkbox" id="p-normalize" onchange="updateClip()">
@@ -533,6 +543,18 @@
             generateFFmpeg();
         };
 
+        // Define a velocidade de reprodução do clipe selecionado (0.5x, 1x, 1.5x, 2x, etc.)
+        // Mantém a duração do clipe na timeline, apenas muda o ritmo do conteúdo.
+        window.setClipSpeed = function(speed) {
+            if (state.selectedIdx === null) return;
+            const clip = state.clips[state.selectedIdx];
+            if (clip.type !== 'video') return;
+            clip.speed = Math.max(0.25, Math.min(4, speed));
+            clip.video.playbackRate = clip.speed;
+            document.getElementById('p-speed').value = clip.speed;
+            generateFFmpeg();
+        };
+
         window.resetCrop = function() {
             if (state.selectedIdx === null) return;
             const clip = state.clips[state.selectedIdx];
@@ -562,6 +584,67 @@
             tex.needsUpdate = true;
         }
 
+        // Detecta se o arquivo de vídeo possui trilha de áudio.
+        // Método principal: video.captureStream()/mozCaptureStream() — suportado em Chrome,
+        // Firefox e Edge — gera um MediaStream a partir do elemento, e podemos checar
+        // stream.getAudioTracks().length diretamente, sem precisar tocar o vídeo.
+        // Fallbacks (navegadores mais antigos/Safari): video.mozHasAudio, video.audioTracks,
+        // e por último webkitAudioDecodedByteCount (precisa decodificar alguns frames).
+        // Roda automaticamente no import; o resultado (clip.hasAudio) é usado direto pelo
+        // gerador de comando FFmpeg, sem necessidade de nenhuma ação do usuário.
+        function detectHasAudio(video, clip) {
+            const applyResult = (hasAudio) => {
+                clip.hasAudio = hasAudio;
+                generateFFmpeg();
+            };
+
+            const captureStreamFn = video.captureStream || video.mozCaptureStream;
+            if (typeof captureStreamFn === 'function') {
+                try {
+                    const stream = captureStreamFn.call(video);
+                    // Pequeno delay para garantir que o navegador já populou as tracks do stream
+                    // a partir dos metadados do container.
+                    setTimeout(() => {
+                        const audioTracks = stream.getAudioTracks();
+                        applyResult(audioTracks.length > 0);
+                        stream.getTracks().forEach(t => t.stop());
+                    }, 50);
+                    return;
+                } catch (e) {
+                    // Cross-origin sem CORS ou outro erro: cai para os fallbacks abaixo
+                }
+            }
+
+            if (typeof video.mozHasAudio !== 'undefined') {
+                applyResult(!!video.mozHasAudio);
+                return;
+            }
+            if (video.audioTracks && typeof video.audioTracks.length === 'number') {
+                applyResult(video.audioTracks.length > 0);
+                return;
+            }
+            if ('webkitAudioDecodedByteCount' in video) {
+                const wasMuted = video.muted;
+                video.muted = true;
+                const finish = () => {
+                    applyResult((video.webkitAudioDecodedByteCount || 0) > 0);
+                    video.pause();
+                    video.muted = wasMuted;
+                    video.currentTime = clip.sourceStart || 0;
+                };
+                video.play().then(() => {
+                    setTimeout(finish, 250);
+                }).catch(() => {
+                    // Autoplay bloqueado: assume hasAudio=true por padrão (assunção mais segura)
+                    video.muted = wasMuted;
+                    applyResult(true);
+                });
+                return;
+            }
+            // Nenhuma API disponível: assume hasAudio=true por padrão.
+            applyResult(true);
+        }
+
         window.handleFiles = function(files) {
             Array.from(files).forEach(file => {
                 const video = document.createElement('video');
@@ -580,6 +663,8 @@
                     duration: 5,
                     scale: 1.0,
                     volume: 1.0,
+                    speed: 1.0,
+                    hasAudio: undefined, // undefined = ainda detectando; populado por detectHasAudio()
                     fadeIn: 0,
                     fadeOut: 0,
                     normalize: false,
@@ -604,6 +689,7 @@
                     clip.nativeW = video.videoWidth || PROJECT.w;
                     clip.nativeH = video.videoHeight || PROJECT.h;
                     clip.mesh.geometry = computeGeometry(clip.nativeW, clip.nativeH, clip.fitMode);
+                    detectHasAudio(video, clip);
                 }, { once: true });
 
                 state.clips.push(clip);
@@ -876,10 +962,12 @@
                 const isVideo = clip.type === 'video';
                 document.getElementById('srcstart-group').style.display = isVideo ? 'block' : 'none';
                 document.getElementById('vol-group').style.display = isVideo ? 'block' : 'none';
-                document.getElementById('normalize-group').style.display = isVideo ? 'block' : 'none';
+                document.getElementById('speed-group').style.display = isVideo ? 'block' : 'none';
+                document.getElementById('normalize-group').style.display = (isVideo && clip.hasAudio !== false) ? 'block' : 'none';
                 if(isVideo) {
                     document.getElementById('p-srcstart').value = clip.sourceStart;
                     document.getElementById('p-volume').value = clip.volume;
+                    document.getElementById('p-speed').value = clip.speed ?? 1;
                     document.getElementById('p-normalize').checked = !!clip.normalize;
                     document.getElementById('p-normalize-lufs').value = clip.normalizeLufs ?? -14;
                 }
@@ -991,7 +1079,14 @@
                         updateIfValid('p-srcstart', 'sourceStart');
                         updateIfValid('p-volume', 'volume');
                         clip.video.volume = Math.min(1, clip.volume);
-                        clip.normalize = document.getElementById('p-normalize').checked;
+                        // clip.hasAudio é definido apenas pela detecção automática (detectHasAudio)
+                        document.getElementById('normalize-group').style.display = (clip.hasAudio !== false) ? 'block' : 'none';
+                        const speedVal = document.getElementById('p-speed').value;
+                        if (speedVal !== "") {
+                            clip.speed = Math.max(0.25, Math.min(4, parseFloat(speedVal)));
+                            clip.video.playbackRate = clip.speed;
+                        }
+                        clip.normalize = (clip.hasAudio !== false) && document.getElementById('p-normalize').checked;
                         clip.normalizeLufs = parseFloat(document.getElementById('p-normalize-lufs').value);
                     }
                 } else {
@@ -1072,8 +1167,9 @@
                     scene.add(newMesh);
                     const newVideoClip = {
                         id: Date.now() + Math.random(), type: 'video', path: clip.path,
-                        timelineStart: splitTime, sourceStart: clip.sourceStart + offsetFromStart,
-                        duration: newClipDuration, scale: clip.scale, volume: clip.volume,
+                        timelineStart: splitTime, sourceStart: clip.sourceStart + offsetFromStart * (clip.speed || 1),
+                        duration: newClipDuration, scale: clip.scale, volume: clip.volume, speed: clip.speed || 1,
+                        hasAudio: clip.hasAudio !== false,
                         fadeIn: 0, fadeOut: clip.fadeOut,
                         normalize: clip.normalize || false, normalizeLufs: clip.normalizeLufs ?? -14,
                         fitMode: clip.fitMode, nativeW: clip.nativeW, nativeH: clip.nativeH,
@@ -1084,6 +1180,7 @@
                     state.clips.push(newVideoClip);
                     // Apply crop UV so the new clip shows the same cropped region
                     applyCropUV(newVideoClip);
+                    video.addEventListener('loadedmetadata', () => { video.playbackRate = newVideoClip.speed || 1; }, { once: true });
                     secondClip = newVideoClip;
                 } else if (clip.type === 'image') {
                     // Clone the texture so each clip has independent UV (offset/repeat) state
@@ -1209,6 +1306,8 @@
                 sourceStart: src.sourceStart || 0,
                 scale: src.scale,
                 volume: src.volume,
+                speed: src.speed || 1,
+                hasAudio: src.hasAudio !== false,
                 fadeIn: src.fadeIn || 0,
                 fadeOut: src.fadeOut || 0,
                 normalize: src.normalize || false,
@@ -1266,10 +1365,12 @@
                 mesh.scale.set(c.scale, c.scale, 1);
                 mesh.rotation.z = -(c.rotate || 0) * Math.PI / 180;
                 scene.add(mesh);
+                video.playbackRate = c.speed || 1;
                 state.clips.push({
                     id: Date.now() + Math.random(), type: 'video', path: c.path,
                     timelineStart: pasteStart, sourceStart: c.sourceStart,
-                    duration: c.duration, scale: c.scale, volume: c.volume,
+                    duration: c.duration, scale: c.scale, volume: c.volume, speed: c.speed || 1,
+                    hasAudio: c.hasAudio !== false,
                     fadeIn: c.fadeIn, fadeOut: c.fadeOut,
                     normalize: c.normalize || false, normalizeLufs: c.normalizeLufs ?? -14,
                     fitMode: c.fitMode, nativeW: c.nativeW, nativeH: c.nativeH,
@@ -1401,7 +1502,7 @@
                 block.style.top = `${lanes[i] * 32 + 4}px`;
                 block.style.left = `${clip.timelineStart * PROJECT.pxPerSec}px`;
                 block.style.width = `${clip.duration * PROJECT.pxPerSec}px`;
-                block.innerText = clip.type === 'audio' ? `🎵 ${clip.path}` : (clip.type === 'video' ? clip.path : (clip.type === 'image' ? clip.path : clip.text));
+                block.innerText = clip.type === 'audio' ? `🎵 ${clip.path}` : (clip.type === 'video' ? `${clip.path}${(clip.speed && clip.speed !== 1) ? ` ⚡${clip.speed}x` : ''}` : (clip.type === 'image' ? clip.path : clip.text));
                 const res = document.createElement('div');
                 res.className = 'resizer';
                 res.dataset.id = clip.id;
@@ -1418,8 +1519,10 @@
                 if (clip.type !== 'audio') clip.mesh.visible = active;
                 if (active) {
                     if(clip.type === 'video') {
-                        clip.video.currentTime = (state.time - clip.timelineStart) + clip.sourceStart;
+                        const speed = clip.speed || 1;
+                        clip.video.currentTime = (state.time - clip.timelineStart) * speed + clip.sourceStart;
                         clip.video.volume = Math.min(1, clip.volume);
+                        clip.video.playbackRate = speed;
                         if (!state.isPlaying) clip.video.pause();
                     }
                     if(clip.type === 'audio') {
@@ -1444,7 +1547,10 @@
             state.clips.forEach(c => {
                 if(c.type === 'video') {
                     const active = state.time >= c.timelineStart && state.time <= (c.timelineStart + c.duration);
-                    if (active) state.isPlaying ? c.video.play().catch(() => {}) : c.video.pause();
+                    if (active) {
+                        c.video.playbackRate = c.speed || 1;
+                        state.isPlaying ? c.video.play().catch(() => {}) : c.video.pause();
+                    }
                 }
                 if(c.type === 'audio') {
                     const active = state.time >= c.timelineStart && state.time <= (c.timelineStart + c.duration);
@@ -1473,6 +1579,26 @@
                 .replace(/'/g, "\u2019");
         }
 
+        // O filtro atempo do FFmpeg só aceita fatores entre 0.5 e 2.0 por instância.
+        // Para velocidades fora desse intervalo (ex: 0.25x ou 4x), encadeamos
+        // múltiplos atempo até atingir o fator total desejado.
+        function buildAtempoChain(speed) {
+            let s = speed;
+            const factors = [];
+            if (s <= 0) s = 1;
+            while (s > 2.0) { factors.push(2.0); s /= 2.0; }
+            while (s < 0.5) { factors.push(0.5); s /= 0.5; }
+            factors.push(s);
+            return factors.map(f => `atempo=${f.toFixed(4)}`).join(',');
+        }
+
+        // Duração (em segundos do ARQUIVO ORIGEM) que precisa ser lida para que,
+        // após aplicar a velocidade do clipe, o resultado preencha `clip.duration`
+        // segundos na timeline.
+        function sourceDuration(clip) {
+            return clip.duration * (clip.speed || 1);
+        }
+
         // --- SOLUÇÃO PARA O CONSUMO EXCESSIVO DE MEMÓRIA COM MÚLTIPLOS loudnorm ---
         // Em vez de rodar N filtros loudnorm em paralelo dentro do mesmo filter_complex
         // (o que faz o FFmpeg ter que bufferizar várias trilhas simultaneamente enquanto
@@ -1488,12 +1614,16 @@
             clips.forEach(clip => {
                 if (!clip.normalize) return;
                 if (clip.type !== 'video' && clip.type !== 'audio') return;
+                if (clip.type === 'video' && clip.hasAudio === false) return;
 
                 const outFile = `tmp_norm_${clip.id}.wav`;
                 const ssFlag = clip.sourceStart > 0 ? `-ss ${clip.sourceStart} ` : ``;
+                // Para vídeo, lemos a duração de origem (já considerando a velocidade),
+                // pois o atempo é aplicado depois, no comando principal.
+                const tDur = clip.type === 'video' ? sourceDuration(clip) : clip.duration;
                 // Cada chamada aqui roda isoladamente (uma de cada vez), então o pico de
                 // memória do loudnorm nunca se soma ao de outras camadas.
-                lines.push(`ffmpeg -y ${ssFlag}-i "${escapePath(clip.path)}" -t ${clip.duration} -vn -af "loudnorm=I=${clip.normalizeLufs}:TP=-1.0:LRA=11" -ar 44100 -ac 2 "${outFile}"`);
+                lines.push(`ffmpeg -y ${ssFlag}-i "${escapePath(clip.path)}" -t ${tDur} -vn -af "loudnorm=I=${clip.normalizeLufs}:TP=-1.0:LRA=11" -ar 44100 -ac 2 "${outFile}"`);
                 fileMap[clip.id] = outFile;
             });
 
@@ -1558,7 +1688,10 @@
 
                     let vFilter = "";
                     if (clip.type === 'video') {
-                        vFilter = `trim=start=0:duration=${duration},setpts=PTS-STARTPTS`;
+                        const speed = clip.speed || 1;
+                        const srcDur = sourceDuration(clip); // segundos a ler da fonte para preencher `duration` na timeline
+                        vFilter = `trim=start=0:duration=${srcDur},setpts=PTS-STARTPTS`;
+                        if (speed !== 1) vFilter += `,setpts=${(1 / speed).toFixed(6)}*PTS`;
                         vFilter += `,setpts=PTS+${globalStart}/TB`;
                     } else {
                         vFilter = `setpts=PTS-STARTPTS,setpts=PTS+${globalStart}/TB`;
@@ -1659,12 +1792,15 @@
                     ovlChain += `${prev}[v${i}]overlay=${overlayX}:${overlayY}:enable='between(t,${globalStart},${globalEnd})'${next},`;
                     ovlCounter++;
 
-                    if (clip.type === 'video') {
+                    if (clip.type === 'video' && clip.hasAudio !== false) {
                         const usingNormFile = clip.audioInputIndex !== undefined;
                         const aIn = usingNormFile ? `[${clip.audioInputIndex}:a]` : `[${clip.inputIndex}:a]`;
                         const aP = `[a${audioCounter}]`;
                         const delayMs = Math.round(clip.timelineStart * 1000);
-                        let aFilter = `atrim=start=0:duration=${duration},asetpts=PTS-STARTPTS`;
+                        const speed = clip.speed || 1;
+                        const srcDur = sourceDuration(clip);
+                        let aFilter = `atrim=start=0:duration=${srcDur},asetpts=PTS-STARTPTS`;
+                        if (speed !== 1) aFilter += `,${buildAtempoChain(speed)}`;
                         aFilter += `,asetpts=PTS+${globalStart}/TB`;
                         // loudnorm já foi aplicado no passo 1 (script de pré-normalização) — não repetir aqui
                         if (clip.normalize && !usingNormFile) aFilter += `,loudnorm=I=${clip.normalizeLufs}:TP=-1.0:LRA=11`;
@@ -1808,7 +1944,9 @@ ${mainCmd}
                             if (clip.type !== 'audio') clip.mesh.material.opacity = calculateOpacity(clip);
                             if(clip.type === 'video') {
                                 if (clip.video.paused) {
-                                    clip.video.currentTime = (state.time - clip.timelineStart) + clip.sourceStart;
+                                    const speed = clip.speed || 1;
+                                    clip.video.currentTime = (state.time - clip.timelineStart) * speed + clip.sourceStart;
+                                    clip.video.playbackRate = speed;
                                     clip.video.play().catch(() => {});
                                 }
                             }
