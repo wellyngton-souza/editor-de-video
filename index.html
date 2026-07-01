@@ -358,6 +358,10 @@
         <div id="viewport-container"></div>
         <div id="prompt-box">
             <div id="prompt-text">Import videos or add text to generate command...</div>
+            <label class="checkbox-row" style="margin-bottom:10px;">
+                <input type="checkbox" id="export-60fps" onchange="setExport60fps(this.checked)">
+                <span>Exportar em 60 FPS (opcional)</span>
+            </label>
             <button class="btn copy-btn" onclick="copyPrompt()">Copy Command</button>
         </div>
         <div id="timeline">
@@ -419,7 +423,7 @@
         });
 
         const PROJECT = { w: 1920, h: 1080, aspect: 16/9, pxPerSec: 20 };
-        let state = { clips: [], selectedIdx: null, isPlaying: false, time: 0 };
+        let state = { clips: [], selectedIdx: null, isPlaying: false, time: 0, export60fps: false };
         let clipboard = null; // stores a deep copy of the last copied clip
 
         const scene = new THREE.Scene();
@@ -777,6 +781,11 @@
                 state.clips.push(clip);
             });
             syncUI();
+            generateFFmpeg();
+        };
+
+        window.setExport60fps = function(checked) {
+            state.export60fps = checked;
             generateFFmpeg();
         };
 
@@ -1848,7 +1857,8 @@
             });
 
             if (ovlChain.endsWith(',')) ovlChain = ovlChain.slice(0, -1);
-            const bg = `color=c=black:s=1920x1080:d=${totalT}[bg]`;
+            const outputFps = state.export60fps ? 60 : 30;
+            const bg = `color=c=black:s=1920x1080:d=${totalT}:r=${outputFps}[bg]`;
             const finalVString = `${bg};${vChains.join(',')};${ovlChain}`;
             const vOut = ovlCounter > 0 ? `[ovl${ovlCounter - 1}]` : `[bg]`;
             
@@ -1868,7 +1878,7 @@
                 aOut = "[silent]";
             }
             
-            const mainCmd = `ffmpeg ${inputs} -filter_complex "${finalVString};${finalA}" -map "${vOut}" -map "${aOut}" -t ${totalT} -c:v libx264 -c:a aac -movflags +faststart output.mp4`;
+            const mainCmd = `ffmpeg ${inputs} -filter_complex "${finalVString};${finalA}" -map "${vOut}" -map "${aOut}" -t ${totalT} -c:v libx264 -r ${outputFps} -c:a aac -movflags +faststart output.mp4`;
 
             if (normLines.length > 0) {
                 const script =
