@@ -430,7 +430,9 @@
         const camera = new THREE.OrthographicCamera(-PROJECT.w/2, PROJECT.w/2, PROJECT.h/2, -PROJECT.h/2, 0.1, 1000);
         camera.position.z = 10;
 
-        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+        renderer.outputColorSpace = THREE.SRGBColorSpace;
+        renderer.setPixelRatio(1); // mantém resolução 1:1 — subir isso em telas retina derruba o fps rápido
         const viewport = document.getElementById('viewport-container');
         viewport.appendChild(renderer.domElement);
 
@@ -556,6 +558,19 @@
             clip.speed = Math.max(0.25, Math.min(4, speed));
             clip.video.playbackRate = clip.speed;
             document.getElementById('p-speed').value = clip.speed;
+
+            // WORKAROUND: em vídeos sem faixa de áudio, alguns navegadores (Chrome/Chromium)
+            // ignoram mudanças de playbackRate feitas durante a reprodução, pois o clock de
+            // sincronização de frames normalmente depende do áudio. Forçamos um pause/seek/play
+            // para o motor de vídeo "reiniciar" o pipeline e passar a respeitar a nova taxa.
+            if (!clip.video.paused) {
+                const t = clip.video.currentTime;
+                clip.video.pause();
+                clip.video.currentTime = t;
+                clip.video.playbackRate = clip.speed;
+                clip.video.play().catch(() => {});
+            }
+
             generateFFmpeg();
         };
 
@@ -658,6 +673,7 @@
                 video.crossOrigin = "anonymous";
 
                 const tex = new THREE.VideoTexture(video);
+                tex.colorSpace = THREE.SRGBColorSpace;
                 const clip = {
                     id: Date.now() + Math.random(),
                     type: 'video',
@@ -732,6 +748,7 @@
                 img.src = url;
 
                 const tex = new THREE.TextureLoader().load(url);
+                tex.colorSpace = THREE.SRGBColorSpace;
                 const mesh = new THREE.Mesh(
                     computeGeometry(clip.nativeW, clip.nativeH, clip.fitMode),
                     new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, transparent: true })
@@ -1094,6 +1111,15 @@
                         if (speedVal !== "") {
                             clip.speed = Math.max(0.25, Math.min(4, parseFloat(speedVal)));
                             clip.video.playbackRate = clip.speed;
+                            // Workaround: vídeos sem faixa de áudio às vezes ignoram playbackRate
+                            // aplicado durante a reprodução (ver setClipSpeed para detalhes).
+                            if (!clip.video.paused) {
+                                const t = clip.video.currentTime;
+                                clip.video.pause();
+                                clip.video.currentTime = t;
+                                clip.video.playbackRate = clip.speed;
+                                clip.video.play().catch(() => {});
+                            }
                         }
                         clip.normalize = (clip.hasAudio !== false) && document.getElementById('p-normalize').checked;
                         clip.normalizeLufs = parseFloat(document.getElementById('p-normalize-lufs').value);
@@ -1163,6 +1189,7 @@
                     video.src = clip.video.src;
                     video.muted = false; video.loop = true;
                     const tex = new THREE.VideoTexture(video);
+                    tex.colorSpace = THREE.SRGBColorSpace;
                     // Use crop-aware geometry (same logic as updateClip)
                     const vcw = clip.cropW || clip.nativeW;
                     const vch = clip.cropH || clip.nativeH;
@@ -1365,6 +1392,7 @@
                 video.src = c.videoSrc;
                 video.muted = false; video.loop = true;
                 const tex = new THREE.VideoTexture(video);
+                tex.colorSpace = THREE.SRGBColorSpace;
                 const mesh = new THREE.Mesh(
                     computeGeometry(c.nativeW, c.nativeH, c.fitMode),
                     new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, transparent: true })
@@ -1547,8 +1575,9 @@
             });
         }
 
+        const playheadEl = document.getElementById('playhead');
         function updatePlayhead() {
-            document.getElementById('playhead').style.left = `${state.time * PROJECT.pxPerSec}px`;
+            playheadEl.style.left = `${state.time * PROJECT.pxPerSec}px`;
         }
 
         window.togglePlayback = function() {
@@ -1580,6 +1609,19 @@
             return String(p || '').replace(/"/g, '\\"');
         }
 
+        // Vídeos .webm com canal alpha (fundo removido) armazenam a transparência
+        // como um "BlockAdditional" dentro do container Matroska/WebM. O decoder
+        // NATIVO de VP9 que o FFmpeg escolhe por padrão (o decoder chamado apenas
+        // "vp9") IGNORA esse bloco extra e entrega o frame como se fosse 100% opaco
+        // — por isso o vídeo "sem fundo" acaba saindo opaco no render final, mesmo
+        // com format=yuva420p aplicado depois no filtro.
+        // Forçando explicitamente o decoder "libvpx-vp9" (o wrapper que usa a lib
+        // libvpx de verdade) o alpha é lido corretamente. Esse flag precisa vir
+        // ANTES do -i correspondente, pois é uma opção de INPUT, não de output.
+        function needsAlphaDecoder(path) {
+            return /\.webm$/i.test(String(path || '').trim());
+        }
+
         function escapeDrawtext(s) {
             // drawtext usa : e ' como delimitadores especiais — precisam ser escapados
             return String(s || '')
@@ -1608,6 +1650,23 @@
             return clip.duration * (clip.speed || 1);
         }
 
+        // Detecta se o trecho pedido na timeline (a partir de sourceStart) ultrapassa
+        // a duração real do arquivo de origem. Se sim, o ffmpeg precisa repetir o arquivo
+        // em loop (-stream_loop -1) para cobrir toda a duração — o mesmo comportamento que
+        // o preview já faz sozinho via `video.loop = true` / `audio.loop = true`.
+        function needsSourceLoop(clip) {
+            if (clip.type === 'video') {
+                const srcDur = sourceDuration(clip);
+                const nativeDur = (clip.video && isFinite(clip.video.duration)) ? clip.video.duration : Infinity;
+                return (clip.sourceStart + srcDur) > (nativeDur + 0.05);
+            }
+            if (clip.type === 'audio') {
+                const nativeDur = (clip.audio && isFinite(clip.audio.duration)) ? clip.audio.duration : Infinity;
+                return (clip.sourceStart + clip.duration) > (nativeDur + 0.05);
+            }
+            return false;
+        }
+
         // --- SOLUÇÃO PARA O CONSUMO EXCESSIVO DE MEMÓRIA COM MÚLTIPLOS loudnorm ---
         // Em vez de rodar N filtros loudnorm em paralelo dentro do mesmo filter_complex
         // (o que faz o FFmpeg ter que bufferizar várias trilhas simultaneamente enquanto
@@ -1630,9 +1689,10 @@
                 // Para vídeo, lemos a duração de origem (já considerando a velocidade),
                 // pois o atempo é aplicado depois, no comando principal.
                 const tDur = clip.type === 'video' ? sourceDuration(clip) : clip.duration;
+                const loopFlag = needsSourceLoop(clip) ? `-stream_loop -1 ` : ``;
                 // Cada chamada aqui roda isoladamente (uma de cada vez), então o pico de
                 // memória do loudnorm nunca se soma ao de outras camadas.
-                lines.push(`ffmpeg -y ${ssFlag}-i "${escapePath(clip.path)}" -t ${tDur} -vn -af "loudnorm=I=${clip.normalizeLufs}:TP=-1.0:LRA=11" -ar 44100 -ac 2 "${outFile}"`);
+                lines.push(`ffmpeg -y ${loopFlag}${ssFlag}-i "${escapePath(clip.path)}" -t ${tDur} -vn -af "loudnorm=I=${clip.normalizeLufs}:TP=-1.0:LRA=11" -ar 44100 -ac 2 "${outFile}"`);
                 fileMap[clip.id] = outFile;
             });
 
@@ -1658,7 +1718,10 @@
                 if (clip.type === 'video' || clip.type === 'image') {
                     clip.inputIndex = inputCounter++; 
                     const ssFlag = (clip.type === 'video' && clip.sourceStart > 0) ? `-ss ${clip.sourceStart} ` : ``;
-                    inputs += (clip.type === 'image' ? `-loop 1 ` : ``) + `${ssFlag}-i "${escapePath(clip.path)}" `;
+                    const loopFlag = (clip.type === 'video' && needsSourceLoop(clip)) ? `-stream_loop -1 ` : ``;
+                    // Força o decoder correto para preservar o canal alpha de vídeos .webm sem fundo
+                    const decoderFlag = (clip.type === 'video' && needsAlphaDecoder(clip.path)) ? `-c:v libvpx-vp9 ` : ``;
+                    inputs += decoderFlag + loopFlag + (clip.type === 'image' ? `-loop 1 ` : ``) + `${ssFlag}-i "${escapePath(clip.path)}" `;
 
                     if (clip.type === 'video' && normFile) {
                         // Áudio já normalizado entra como um input separado, só com -t (já vem cortado)
@@ -1672,7 +1735,8 @@
                         inputs += `-i "${normFile}" `;
                     } else {
                         const ssFlag = clip.sourceStart > 0 ? `-ss ${clip.sourceStart} ` : ``;
-                        inputs += `${ssFlag}-i "${escapePath(clip.path)}" `;
+                        const loopFlag = needsSourceLoop(clip) ? `-stream_loop -1 ` : ``;
+                        inputs += loopFlag + `${ssFlag}-i "${escapePath(clip.path)}" `;
                     }
                 } else {
                     clip.inputIndex = null; 
@@ -1705,6 +1769,12 @@
                     } else {
                         vFilter = `setpts=PTS-STARTPTS,setpts=PTS+${globalStart}/TB`;
                     }
+
+                    // Força um pixel format com canal alpha logo após o decode.
+                    // Sem isso, o overlay mais abaixo negocia pra yuv420p (sem alpha)
+                    // e qualquer vídeo/imagem com transparência vira opaco (fundo preto)
+                    // no export, mesmo que no preview (WebGL) apareça transparente.
+                    vFilter += `,format=yuva420p`;
 
                     // Crop filter (applied before scale)
                     const hasCrop = clip.cropW || clip.cropH || clip.cropX || clip.cropY;
@@ -1784,7 +1854,6 @@
                                 rotatedW += rotatedW % 2;
                                 rotatedH += rotatedH % 2;
                                 vFilter += `,rotate=${rad.toFixed(6)}:c=none:ow=${rotatedW}:oh=${rotatedH}`;
-                                vFilter += `,format=yuva420p`;
                             }
                         }
 
